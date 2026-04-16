@@ -23,9 +23,14 @@ Your VMS or the camera's own Action Rules can react to the virtual port changes 
 | Axis cameras without video (thermal, radar) | Yes | No | Overlay auto-disabled |
 | Axis speakers / intercoms | Yes | No | Overlay auto-disabled |
 
-**Architecture:** aarch64 (ARM64). Covers M3086-V (CV25), P-series, Q-series, and all modern Axis devices.
+**Architectures:**
 
-**Minimum firmware:** AXIS OS with Native ACAP SDK support.
+| `.eap` variant | SoC families | Example devices |
+|---|---|---|
+| **aarch64** | CV25, ARTPEC-8, ARTPEC-9 | M3086-V, P3265-V, Q6135-LE |
+| **armv7hf** | ARTPEC-7 | M3075-V, P3245-V (AXIS OS 11.10+) |
+
+**Minimum firmware:** AXIS OS with Native ACAP SDK support (embedded SDK 3.0).
 
 ---
 
@@ -33,7 +38,7 @@ Your VMS or the camera's own Action Rules can react to the virtual port changes 
 
 ### 1. Install the ACAP
 
-Download the latest `.eap` from the [Releases page](../../releases), then:
+Download the latest `.eap` for your architecture from the [Releases page](https://github.com/gscarlet22-design/Weather-ACAP/releases), then:
 
 1. Open the camera web interface
 2. Go to **Apps** (or **System > ACAP**)
@@ -186,43 +191,58 @@ Use **Download config JSON** / **Upload config JSON** on the Advanced tab to exp
 
 ## Building from source
 
-This is a native ACAP built with the ACAP Native SDK.
+This is a native C ACAP built with the [ACAP Native SDK 1.14](https://github.com/AxisCommunications/acap-native-sdk). No Python, no container runtime on the camera.
 
 ### Prerequisites
 
-- [ACAP Native SDK](https://github.com/AxisCommunications/acap-native-sdk) Docker images
-- Docker with buildx
+- Docker (the SDK cross-toolchains run inside Docker — no ARM hardware needed)
 
 ### Build
 
 ```bash
-# Build the .eap for aarch64
-docker build --build-arg ARCH=aarch64 -t weather-acap-build .
-docker cp "$(docker create weather-acap-build)":/opt/app/*.eap .
+# Build the .eap for aarch64 (CV25, ARTPEC-8/9)
+docker build --build-arg ARCH=aarch64 -t weather-acap-build:aarch64 .
+container=$(docker create weather-acap-build:aarch64)
+docker cp "$container:/opt/app/." dist/ && docker rm "$container"
+# .eap is now in dist/
+
+# Build the .eap for armv7hf (ARTPEC-7)
+docker build --build-arg ARCH=armv7hf -t weather-acap-build:armv7hf .
+container=$(docker create weather-acap-build:armv7hf)
+docker cp "$container:/opt/app/." dist/ && docker rm "$container"
 ```
+
+### CI/CD
+
+GitHub Actions builds both architectures on every push to `main` and on pull requests. Tagged pushes (`v*.*.*`) also publish a GitHub Release with both `.eap` files attached.
+
+See [`.github/workflows/build.yml`](.github/workflows/build.yml) for the full pipeline.
 
 ### Project structure
 
 ```
 app/
-  weather_acap.c    Main daemon (GLib event loop + poll timer)
-  config_cgi.c      CGI backend (action-routed, 16+ endpoints)
-  params.c          axparameter wrapper (all config fields)
-  weather_api.c     Weather provider abstraction
-  nws.c             NWS API client
-  openmeteo.c       Open-Meteo API client
-  alerts.c          Alert-to-port mapping + state machine
-  overlay.c         Template renderer + VAPIX overlay API
-  vapix.c           Shared VAPIX helpers (ports, video detect, device info)
-  history.c         Alert history ring buffer (JSONL)
-  webhook.c         Outbound webhook POST
-  cJSON.c           JSON parser
+  weather_acap.c        Main daemon (GLib event loop + poll timer)
+  config_cgi.c          CGI backend → builds as weather_acap.cgi
+  params.c              axparameter wrapper (all config fields)
+  weather_api.c         Weather provider abstraction
+  nws.c                 NWS API client
+  openmeteo.c           Open-Meteo API client
+  alerts.c              Alert-to-port mapping + state machine
+  overlay.c             Template renderer + VAPIX overlay API
+  vapix.c               Shared VAPIX helpers (ports, video detect, device info)
+  history.c             Alert history ring buffer (JSONL)
+  webhook.c             Outbound webhook POST
+  cJSON.c / cJSON.h     JSON parser (MIT, Dave Gamble)
   html/
-    index.html      Single-page app shell (6 tabs)
-    style.css       Storm-theme dark UI
-    app.js          Tab routing, config CRUD, live polling, diagnostics
-  manifest.json     ACAP package manifest
-  Makefile          Cross-compile targets
+    index.html          Single-page app shell (6 tabs)
+    style.css           Storm-theme dark UI
+    app.js              Tab routing, config CRUD, live polling, diagnostics
+    weather_acap.cgi    CGI binary (installed here by build)
+  manifest.json         ACAP package manifest
+  Makefile              Cross-compile targets (used by acap-build)
+Dockerfile              Native SDK build container
+TROUBLESHOOTING.md      Common issues and VAPIX debug commands
 ```
 
 ---
