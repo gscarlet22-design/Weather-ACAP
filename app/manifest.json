@@ -12,6 +12,7 @@
       "runMode": "respawn"
     },
     "configuration": {
+      "settingPage": "index.html",
       "httpConfig": [
         {
           "name": "config_cgi",
