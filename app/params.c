@@ -80,8 +80,9 @@ gboolean params_init(GError **error) {
     g_axparam = ax_parameter_new(APP_NAME, error);
     if (!g_axparam) return FALSE;
 
-    /* Ensure every parameter exists so ax_parameter_set() works reliably from
-     * the CGI binary.  On first install none of these have been created yet. */
+    /* Ensure every parameter exists.  The daemon runs first and creates any
+     * that are missing (e.g. after a fresh install or firmware upgrade).
+     * param.conf pre-registers them, but this is a safety net. */
     for (int i = 0; DEFAULTS[i].name; i++) {
         gchar  *existing = NULL;
         GError *e        = NULL;
@@ -94,6 +95,20 @@ gboolean params_init(GError **error) {
         } else {
             g_free(existing);
         }
+    }
+    return TRUE;
+}
+
+gboolean params_init_readonly(void) {
+    /* CGI-safe init: open the parameter handle but never create parameters.
+     * If axparameter is unavailable (permissions, D-Bus, etc.), the CGI
+     * still runs — params_get() falls back to compiled defaults. */
+    GError *err = NULL;
+    g_axparam = ax_parameter_new(APP_NAME, &err);
+    if (!g_axparam) {
+        if (err) g_error_free(err);
+        /* Not fatal — compiled defaults will be used */
+        return FALSE;
     }
     return TRUE;
 }

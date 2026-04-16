@@ -548,12 +548,10 @@ static const char *query_action(const char *qs) {
 }
 
 int main(void) {
-    GError *err = NULL;
-    if (!params_init(&err)) {
-        err_json("axparameter init failed");
-        if (err) g_error_free(err);
-        return 1;
-    }
+    /* Use readonly init — the daemon creates parameters, the CGI only reads
+     * and updates them.  If axparameter is unavailable the CGI still works
+     * with compiled-in defaults (params_get handles this transparently). */
+    params_init_readonly();
 
     const char *method = getenv("REQUEST_METHOD");
     const char *qs     = getenv("QUERY_STRING");

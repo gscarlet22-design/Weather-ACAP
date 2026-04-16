@@ -3,8 +3,12 @@
 
 #include <glib.h>
 
-/* Initialize axparameter handle.  Call once at startup. */
+/* Initialize axparameter handle (daemon).  Creates missing parameters. */
 gboolean params_init(GError **error);
+
+/* Initialize axparameter handle (CGI).  Read/write only — does NOT create
+ * parameters.  Falls back to compiled defaults if axparameter is unavailable. */
+gboolean params_init_readonly(void);
 
 /* Release axparameter handle. */
 void params_cleanup(void);
