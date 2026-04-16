@@ -10,17 +10,20 @@
 MAIN_PROG = weather_acap
 CGI_PROG  = html/weather_acap.cgi  # .cgi extension required by camera's lighttpd
 
-# Daemon uses all three libraries; CGI only uses libcurl (no glib/axparameter)
+# Daemon uses all three libraries.
+# CGI has NO libcurl dependency — CGI_NO_CURL guards all curl code at compile
+# time so the binary has no dynamic dependency on libcurl.  This prevents the
+# HTTP 500 caused by the dynamic linker failing to find libcurl in lighttpd's
+# execution context even when it is present in the ACAP runtime's environment.
 DAEMON_PKGS = glib-2.0 axparameter libcurl
-CGI_PKGS    = libcurl
 
 CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
 
 DAEMON_CFLAGS = $(shell pkg-config --cflags $(DAEMON_PKGS))
 DAEMON_LDLIBS = $(shell pkg-config --libs $(DAEMON_PKGS)) -lm
 
-CGI_CFLAGS    = $(shell pkg-config --cflags $(CGI_PKGS))
-CGI_LDLIBS    = $(shell pkg-config --libs $(CGI_PKGS)) -lm
+CGI_CFLAGS    = -DCGI_NO_CURL
+CGI_LDLIBS    = -lm
 
 # Main daemon sources
 MAIN_SRCS = weather_acap.c nws.c openmeteo.c weather_api.c \
@@ -44,7 +47,7 @@ $(MAIN_OBJS): %.o: %.c
 $(MAIN_PROG): $(MAIN_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(DAEMON_LDLIBS)
 
-# ── CGI objects (compiled with libcurl flags only, no glib) ──────────────
+# ── CGI objects (compiled with -DCGI_NO_CURL, no external libraries) ────
 cgi_config_cgi.o: config_cgi.c
 	$(CC) $(CFLAGS) $(CGI_CFLAGS) -c -o $@ $<
 

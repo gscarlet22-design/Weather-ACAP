@@ -1,11 +1,13 @@
 #include "nws.h"
 #include "cJSON.h"
 
-#include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+
+#ifndef CGI_NO_CURL
+#include <curl/curl.h>
 
 /* ── libcurl response buffer ─────────────────────────────────────────────── */
 
@@ -47,10 +49,13 @@ static char *http_get(const char *url, const char *user_agent) {
     return buf.data; /* caller must free */
 }
 
+#endif /* CGI_NO_CURL */
+
 /* ── Census Geocoder ─────────────────────────────────────────────────────── */
 
 void nws_geocode_zip(const char *zip, const char *user_agent, NWSCoords *result) {
     result->valid = 0;
+#ifndef CGI_NO_CURL
     if (!zip || !*zip) return;
 
     char url[256];
@@ -80,10 +85,14 @@ void nws_geocode_zip(const char *zip, const char *user_agent, NWSCoords *result)
         result->valid = 1;
     }
     cJSON_Delete(root);
+#else
+    (void)zip; (void)user_agent;
+#endif
 }
 
 /* ── NWS /points → nearest observation station ───────────────────────────── */
 
+#ifndef CGI_NO_CURL
 static char *nws_get_station_id(double lat, double lon, const char *user_agent) {
     /* Step 1: /points to get observationStations URL */
     char url[256];
@@ -125,13 +134,14 @@ static char *nws_get_station_id(double lat, double lon, const char *user_agent) 
     cJSON_Delete(root);
     return station_id;
 }
+#endif /* CGI_NO_CURL */
 
 /* ── NWS latest observation ──────────────────────────────────────────────── */
 
 void nws_get_observation(double lat, double lon, const char *user_agent,
                          NWSObservation *result) {
     memset(result, 0, sizeof(*result));
-
+#ifndef CGI_NO_CURL
     char *station_id = nws_get_station_id(lat, lon, user_agent);
     if (!station_id) return;
 
@@ -185,6 +195,9 @@ void nws_get_observation(double lat, double lon, const char *user_agent,
 
     result->valid = 1;
     cJSON_Delete(root);
+#else
+    (void)lat; (void)lon; (void)user_agent;
+#endif
 }
 
 /* ── NWS active alerts ───────────────────────────────────────────────────── */
@@ -192,7 +205,7 @@ void nws_get_observation(double lat, double lon, const char *user_agent,
 void nws_get_alerts(double lat, double lon, const char *user_agent,
                     NWSAlertSet *result) {
     memset(result, 0, sizeof(*result));
-
+#ifndef CGI_NO_CURL
     char url[256];
     snprintf(url, sizeof(url),
         "https://api.weather.gov/alerts/active?point=%.4f,%.4f", lat, lon);
@@ -224,4 +237,7 @@ void nws_get_alerts(double lat, double lon, const char *user_agent,
                  cJSON_IsString(headline) ? headline->valuestring : "");
     }
     cJSON_Delete(root);
+#else
+    (void)lat; (void)lon; (void)user_agent;
+#endif
 }

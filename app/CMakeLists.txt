@@ -46,7 +46,9 @@ target_compile_options(weather_acap PRIVATE
 
 # ── Config CGI binary (web UI backend) ───────────────────────────────────
 # The CGI runs under lighttpd, NOT the ACAP runtime, so it must NOT link
-# against libaxparameter or libglib (they crash in that context).
+# against libaxparameter, libglib, or libcurl — any missing library causes
+# the dynamic linker to fail before main() and lighttpd returns HTTP 500.
+# CGI_NO_CURL guards all curl code at compile time; only libm is needed.
 # Config exchange is file-based: daemon writes JSON, CGI reads it.
 add_executable(weather_acap_cgi
     ${SHARED_SRCS}
@@ -56,13 +58,13 @@ set_target_properties(weather_acap_cgi PROPERTIES OUTPUT_NAME weather_acap.cgi)
 
 target_include_directories(weather_acap_cgi PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CURL_INCLUDE_DIRS}
 )
 
 target_link_libraries(weather_acap_cgi PRIVATE
-    ${CURL_LIBRARIES}
     m
 )
+
+target_compile_definitions(weather_acap_cgi PRIVATE CGI_NO_CURL)
 
 target_compile_options(weather_acap_cgi PRIVATE
     -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare

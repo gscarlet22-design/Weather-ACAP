@@ -1,10 +1,12 @@
 #include "openmeteo.h"
 #include "cJSON.h"
 
-#include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef CGI_NO_CURL
+#include <curl/curl.h>
 
 typedef struct { char *data; size_t size; } Buf;
 
@@ -41,9 +43,11 @@ static const char *wmo_description(int code) {
     }
 }
 
+#endif /* CGI_NO_CURL */
+
 void openmeteo_get_observation(double lat, double lon, OMObservation *result) {
     memset(result, 0, sizeof(*result));
-
+#ifndef CGI_NO_CURL
     char url[512];
     snprintf(url, sizeof(url),
         "https://api.open-meteo.com/v1/forecast"
@@ -93,4 +97,7 @@ void openmeteo_get_observation(double lat, double lon, OMObservation *result) {
 
     result->valid = 1;
     cJSON_Delete(root);
+#else
+    (void)lat; (void)lon;
+#endif
 }

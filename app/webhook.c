@@ -1,12 +1,14 @@
 #include "webhook.h"
 #include "weather_api.h"
 
-#include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
 #include <time.h>
+
+#ifndef CGI_NO_CURL
+#include <curl/curl.h>
 
 static size_t discard_cb(void *p, size_t sz, size_t n, void *ud) {
     (void)p; (void)ud;
@@ -31,12 +33,17 @@ static void escape_json(const char *in, char *out, size_t outlen) {
     out[j] = '\0';
 }
 
+#endif /* CGI_NO_CURL */
+
 long webhook_post(const char *url,
                   const WeatherSnapshot *snap,
                   const char *event_type,
                   const char *alert_event) {
     if (!url || !*url) return 0;
-
+#ifdef CGI_NO_CURL
+    (void)snap; (void)event_type; (void)alert_event;
+    return 0;
+#else
     char body[2048];
     char e_type[64], e_evt[256], e_desc[192], e_prov[32];
     escape_json(event_type,  e_type, sizeof(e_type));
@@ -103,4 +110,5 @@ long webhook_post(const char *url,
                url, http_code);
 
     return (rc == CURLE_OK) ? http_code : 0;
+#endif /* CGI_NO_CURL */
 }

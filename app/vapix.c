@@ -1,10 +1,12 @@
 #include "vapix.h"
 
-#include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+
+#ifndef CGI_NO_CURL
+#include <curl/curl.h>
 
 typedef struct { char *data; size_t size; } Buf;
 
@@ -129,3 +131,35 @@ char *vapix_device_info(const char *user, const char *pass) {
     free(body);
     return NULL;
 }
+
+#else /* CGI_NO_CURL — stub implementations: VAPIX not available without libcurl */
+
+long vapix_port_set(int port, int activate, const char *user, const char *pass) {
+    (void)port; (void)activate; (void)user; (void)pass;
+    return 0;
+}
+
+char *vapix_get(const char *path, const char *user, const char *pass,
+                long *http_code_out) {
+    (void)path; (void)user; (void)pass;
+    if (http_code_out) *http_code_out = 0;
+    return NULL;
+}
+
+int vapix_probe_virtual_ports(const char *user, const char *pass, int *max_ports) {
+    (void)user; (void)pass;
+    if (max_ports) *max_ports = 32;
+    return 0;
+}
+
+int vapix_has_video(const char *user, const char *pass) {
+    (void)user; (void)pass;
+    return 0;
+}
+
+char *vapix_device_info(const char *user, const char *pass) {
+    (void)user; (void)pass;
+    return NULL;
+}
+
+#endif /* CGI_NO_CURL */

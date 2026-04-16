@@ -3,15 +3,11 @@
 #include "vapix.h"
 #include "cJSON.h"
 
-#include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
 #include <time.h>
-
-static char g_overlay_id[64] = { 0 };
-static int  g_has_video      = -1;
 
 /* ── Template rendering ─────────────────────────────────────────────────── */
 
@@ -131,6 +127,12 @@ void overlay_render_text(const WeatherSnapshot *snap,
 }
 
 /* ── VAPIX overlay REST API ─────────────────────────────────────────────── */
+
+#ifndef CGI_NO_CURL
+#include <curl/curl.h>
+
+static char g_overlay_id[64] = { 0 };
+static int  g_has_video      = -1;
 
 static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     char **pp = (char **)ud;
@@ -259,3 +261,18 @@ void overlay_delete(const char *vapix_user, const char *vapix_pass) {
     curl_easy_cleanup(curl);
     g_overlay_id[0] = '\0';
 }
+
+#else /* CGI_NO_CURL — overlay push not available, render-only mode */
+
+void overlay_update(const WeatherSnapshot *snap,
+                    const OverlayConfig *cfg,
+                    const char *vapix_user,
+                    const char *vapix_pass) {
+    (void)snap; (void)cfg; (void)vapix_user; (void)vapix_pass;
+}
+
+void overlay_delete(const char *vapix_user, const char *vapix_pass) {
+    (void)vapix_user; (void)vapix_pass;
+}
+
+#endif /* CGI_NO_CURL */
