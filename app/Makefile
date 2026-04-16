@@ -8,7 +8,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 MAIN_PROG = weather_acap
-CGI_PROG  = html/config_cgi   # built directly into html/ so acap-build includes it
+CGI_PROG  = html/weather_acap  # must match httpConfig.name so ACAP routes CGI calls
 
 PKGS    = glib-2.0 axparameter libcurl
 CFLAGS += $(shell pkg-config --cflags $(PKGS)) \

@@ -4,9 +4,9 @@
     "setup": {
       "appName": "weather_acap",
       "friendlyName": "Weather Monitor ACAP",
-      "vendor": "Custom",
-      "vendorUrl": "https://example.com",
-      "version": "2.0.0",
+      "vendor": "gscarlet22-designs",
+      "vendorUrl": "https://github.com/gscarlet22-design",
+      "version": "1.0.0",
       "architecture": "aarch64",
       "embeddedSdkVersion": "3.0",
       "runMode": "respawn"
@@ -15,7 +15,7 @@
       "settingPage": "index.html",
       "httpConfig": [
         {
-          "name": "config_cgi",
+          "name": "weather_acap",
           "access": "admin",
           "type": "transferCgi"
         }

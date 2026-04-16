@@ -7,7 +7,7 @@
   "use strict";
 
   /* ── Constants ──────────────────────────────────────────────────────────── */
-  var CGI = "config_cgi";
+  var CGI = "weather_acap";
   var POLL_MS = 5000;
   var TOAST_MS = 4000;
 

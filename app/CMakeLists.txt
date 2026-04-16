@@ -45,7 +45,9 @@ target_compile_options(weather_acap PRIVATE
 )
 
 # ── Config CGI binary (web UI backend) ───────────────────────────────────────
-add_executable(config_cgi
+# Output binary is named "weather_acap" (matching httpConfig.name in manifest)
+# but CMake target is "weather_acap_cgi" to avoid collision with the daemon.
+add_executable(weather_acap_cgi
     ${UTIL_SRCS}
     nws.c
     openmeteo.c
@@ -55,27 +57,28 @@ add_executable(config_cgi
     webhook.c
     config_cgi.c
 )
+set_target_properties(weather_acap_cgi PROPERTIES OUTPUT_NAME weather_acap)
 
-target_include_directories(config_cgi PRIVATE
+target_include_directories(weather_acap_cgi PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${GLIB_INCLUDE_DIRS}
     ${AXPARAM_INCLUDE_DIRS}
     ${CURL_INCLUDE_DIRS}
 )
 
-target_link_libraries(config_cgi PRIVATE
+target_link_libraries(weather_acap_cgi PRIVATE
     ${GLIB_LIBRARIES}
     ${AXPARAM_LIBRARIES}
     ${CURL_LIBRARIES}
     m
 )
 
-target_compile_options(config_cgi PRIVATE
+target_compile_options(weather_acap_cgi PRIVATE
     -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
 )
 
 # ── Install rules ─────────────────────────────────────────────────────────────
 # acap-build reads the install staging directory to build the .eap
-install(TARGETS weather_acap DESTINATION .)
-install(TARGETS config_cgi   DESTINATION html)
+install(TARGETS weather_acap     DESTINATION .)
+install(TARGETS weather_acap_cgi DESTINATION html)
 install(FILES   html/index.html html/style.css html/app.js DESTINATION html)
