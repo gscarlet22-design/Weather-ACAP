@@ -181,8 +181,8 @@ static void config_load(void) {
         g_config = cJSON_Parse(raw);
         free(raw);
     }
-    if (!g_config)
-        g_config = cJSON_CreateObject();
+    /* g_config may be NULL if daemon hasn't written yet — cfg_get()
+     * handles this by falling back to compiled defaults. */
 }
 
 /* Get a config value.  Returns heap string; caller frees.
@@ -205,23 +205,52 @@ static int cfg_get_int(const char *param_name, int def) {
     return v;
 }
 
-/* Write a full config JSON to SAVE_FILE and signal the daemon. */
-static int config_save(cJSON *new_cfg) {
-    char *json = cJSON_Print(new_cfg);
-    if (!json) return 0;
-    FILE *f = fopen(SAVE_FILE, "w");
-    if (!f) { free(json); return 0; }
-    fputs(json, f);
-    fclose(f);
-    free(json);
-
-    /* Signal daemon to pick up changes */
+/* Signal the daemon to pick up changes from SAVE_FILE. */
+static void signal_daemon(void) {
     char *pidstr = read_file(PID_FILE);
     if (pidstr) {
         pid_t pid = (pid_t)atoi(pidstr);
         if (pid > 1) kill(pid, SIGUSR1);
         free(pidstr);
     }
+}
+
+/* Write a save file as JSON with the given key-value overrides applied
+ * on top of the current config.  Keys/values are param names (not form names). */
+static int write_save_file(const char *overrides[][2], int count) {
+    FILE *f = fopen(SAVE_FILE, "w");
+    if (!f) return 0;
+    fprintf(f, "{\n");
+
+    /* Start with all current config values */
+    int first = 1;
+    for (int i = 0; FIELDS[i].param; i++) {
+        /* Check if this field is overridden */
+        const char *val = NULL;
+        for (int j = 0; j < count; j++) {
+            if (strcmp(overrides[j][0], FIELDS[i].param) == 0) {
+                val = overrides[j][1];
+                break;
+            }
+        }
+        if (!val) {
+            /* Use current config value */
+            char *cur = cfg_get(FIELDS[i].param);
+            if (!first) fprintf(f, ",\n");
+            fprintf(f, "  \"%s\": \"", FIELDS[i].param);
+            json_esc_to(f, cur);
+            fprintf(f, "\"");
+            free(cur);
+        } else {
+            if (!first) fprintf(f, ",\n");
+            fprintf(f, "  \"%s\": \"", FIELDS[i].param);
+            json_esc_to(f, val);
+            fprintf(f, "\"");
+        }
+        first = 0;
+    }
+    fprintf(f, "\n}\n");
+    fclose(f);
     return 1;
 }
 
@@ -260,11 +289,10 @@ static void endpoint_save(const char *body) {
     KV kv[64] = {0};
     int n = parse_kv(body, kv, 64);
 
-    /* Start with current config, overlay changed fields */
-    cJSON *save = g_config ? cJSON_Duplicate(g_config, 1) : cJSON_CreateObject();
-
-    int saved = 0;
-    for (int i = 0; i < n; i++) {
+    /* Build overrides array: map form names → param names */
+    const char *overrides[64][2];
+    int ov_count = 0;
+    for (int i = 0; i < n && ov_count < 64; i++) {
         const char *param_name = NULL;
         for (int m = 0; FIELDS[m].param; m++) {
             if (strcmp(kv[i].key, FIELDS[m].form) == 0) {
@@ -273,23 +301,21 @@ static void endpoint_save(const char *body) {
             }
         }
         if (!param_name) continue;
-
-        /* Don't overwrite password with placeholder */
         if (strcmp(param_name, "VapixPass") == 0
             && strcmp(kv[i].value, "__SET__") == 0) continue;
 
-        cJSON_DeleteItemFromObject(save, param_name);
-        cJSON_AddStringToObject(save, param_name, kv[i].value);
-        saved++;
+        overrides[ov_count][0] = param_name;
+        overrides[ov_count][1] = kv[i].value;
+        ov_count++;
     }
-    free_kv(kv, n);
 
-    int ok = config_save(save);
-    cJSON_Delete(save);
+    int ok = write_save_file(overrides, ov_count);
+    if (ok) signal_daemon();
+    free_kv(kv, n);
 
     json_header();
     printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
-           ok ? "true" : "false", saved, ok ? 0 : 1);
+           ok ? "true" : "false", ov_count, ok ? 0 : 1);
 }
 
 static void endpoint_ports(void) {
@@ -548,25 +574,25 @@ static void endpoint_import(const char *body) {
     cJSON *cfg = cJSON_GetObjectItem(root, "config");
     if (!cfg) { cJSON_Delete(root); err_json("missing config object"); return; }
 
-    /* Build a new config object from current + imported values */
-    cJSON *save = g_config ? cJSON_Duplicate(g_config, 1) : cJSON_CreateObject();
-    int saved = 0;
-    for (int i = 0; FIELDS[i].param; i++) {
+    /* Build overrides from imported JSON */
+    const char *overrides[64][2];
+    int ov_count = 0;
+    for (int i = 0; FIELDS[i].param && ov_count < 64; i++) {
         cJSON *v = cJSON_GetObjectItem(cfg, FIELDS[i].param);
         if (!cJSON_IsString(v)) continue;
         if (strcmp(FIELDS[i].param, "VapixPass") == 0 && !*v->valuestring) continue;
-        cJSON_DeleteItemFromObject(save, FIELDS[i].param);
-        cJSON_AddStringToObject(save, FIELDS[i].param, v->valuestring);
-        saved++;
+        overrides[ov_count][0] = FIELDS[i].param;
+        overrides[ov_count][1] = v->valuestring;
+        ov_count++;
     }
-    cJSON_Delete(root);
 
-    int ok = config_save(save);
-    cJSON_Delete(save);
+    int ok = write_save_file(overrides, ov_count);
+    if (ok) signal_daemon();
+    cJSON_Delete(root);
 
     json_header();
     printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
-           ok ? "true" : "false", saved, ok ? 0 : 1);
+           ok ? "true" : "false", ov_count, ok ? 0 : 1);
 }
 
 /* ── Dispatcher ────────────────────────────────────────────────────────── */

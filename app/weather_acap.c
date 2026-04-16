@@ -21,6 +21,7 @@
 #include <string.h>
 #include <syslog.h>
 #include <time.h>
+#include <unistd.h>
 
 #define HEARTBEAT_FILE "/tmp/weather_acap_heartbeat"
 #define STATUS_FILE    "/tmp/weather_acap_status.json"
