@@ -1,29 +1,21 @@
 /*
  * config_cgi — Web UI backend for Weather ACAP
  *
+ * This CGI runs under lighttpd (not the ACAP runtime), so it deliberately
+ * avoids libaxparameter and libglib — those libraries may crash in the
+ * CGI process context.  Instead, config is exchanged via JSON files:
+ *
+ *   /tmp/weather_acap_config.json   ← written by the daemon, read by CGI
+ *   /tmp/weather_acap_save.json     ← written by CGI, read by daemon
+ *   /tmp/weather_acap_status.json   ← written by daemon (poll snapshot)
+ *   /tmp/weather_acap_heartbeat     ← written by daemon
+ *   /tmp/weather_acap_history.jsonl ← written by daemon (alert log)
+ *
+ * After writing a save file the CGI sends SIGUSR1 to the daemon (PID read
+ * from /tmp/weather_acap.pid) so it picks up changes immediately.
+ *
  * Routed by ?action= query parameter. Each endpoint returns application/json.
- *
- * GET  action=status        → live snapshot + derived state
- * GET  action=config        → current config params
- * POST action=save          → save form-encoded config
- * GET  action=ports         → probe device virtual input port capability
- * GET  action=device        → device brand/model/firmware
- * GET  action=history       → tail of alert history (JSON array)
- * GET  action=logs          → tail of syslog entries (best-effort)
- * GET  action=preview_overlay → render overlay text against current config
- * GET  action=test_weather  → force a live weather fetch, return result
- * GET  action=test_vapix    → ping localhost VAPIX with current creds
- * POST action=fire_port     → activate a single virtual port (?port=N)
- * POST action=clear_port    → deactivate a single virtual port (?port=N)
- * POST action=clear_all     → deactivate every mapped port
- * POST action=fire_drill    → activate every enabled port for 30s then clear
- * POST action=test_webhook  → POST a sample payload to the configured URL
- * GET  action=export        → download full config as JSON
- * POST action=import        → upload full config JSON (body = JSON)
- *
- * Default (no action) → action=config (for convenience / backwards compat).
  */
-#include "params.h"
 #include "cJSON.h"
 #include "vapix.h"
 #include "weather_api.h"
@@ -31,15 +23,47 @@
 #include "overlay.h"
 #include "webhook.h"
 
-#include <glib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <unistd.h>
 
+#define CONFIG_FILE    "/tmp/weather_acap_config.json"
+#define SAVE_FILE      "/tmp/weather_acap_save.json"
+#define PID_FILE       "/tmp/weather_acap.pid"
 #define STATUS_FILE    "/tmp/weather_acap_status.json"
 #define HEARTBEAT_FILE "/tmp/weather_acap_heartbeat"
 #define HISTORY_FILE   "/tmp/weather_acap_history.jsonl"
+
+/* ── Config field table ────────────────────────────────────────────────────
+ * Maps axparameter names ↔ form field names.  Used by config / save / export.
+ */
+typedef struct { const char *param; const char *form; const char *defval; } FieldMap;
+static const FieldMap FIELDS[] = {
+    { "SystemEnabled",        "system_enabled",        "yes" },
+    { "ZipCode",              "zip",                   "" },
+    { "LatOverride",          "lat_override",          "" },
+    { "LonOverride",          "lon_override",          "" },
+    { "WeatherProvider",      "weather_provider",      "auto" },
+    { "NWSUserAgent",         "nws_user_agent",        "WeatherACAP/2.0 (admin@example.com)" },
+    { "PollInterval",         "poll_interval",         "300" },
+    { "AlertMap",             "alert_map",
+      "Tornado Warning:20:1|Severe Thunderstorm Warning:21:1|Flash Flood Warning:22:1" },
+    { "OverlayEnabled",       "overlay_enabled",       "yes" },
+    { "OverlayPosition",      "overlay_position",      "topLeft" },
+    { "OverlayTemplate",      "overlay_template",
+      "Temp: {temp}F | {cond} | Wind: {wind}mph {dir} | Hum: {hum}%" },
+    { "OverlayAlertTemplate", "overlay_alert_template", "[ALERT: {alert_type}] " },
+    { "OverlayMaxAlerts",     "overlay_max_alerts",    "3" },
+    { "WebhookEnabled",       "webhook_enabled",       "no" },
+    { "WebhookUrl",           "webhook_url",           "" },
+    { "WebhookOnAlertsOnly",  "webhook_on_alerts_only","yes" },
+    { "VapixUser",            "vapix_user",            "root" },
+    { "VapixPass",            "vapix_pass",            "" },
+    { "MockMode",             "mock_mode",             "no" },
+    { NULL, NULL, NULL }
+};
 
 /* ── URL-decode / form parse ─────────────────────────────────────────────── */
 
@@ -105,11 +129,6 @@ static void err_json(const char *msg) {
     printf("{\"ok\":false,\"error\":\"%s\"}\n", msg ? msg : "");
 }
 
-static void ok_json(void) {
-    json_header();
-    printf("{\"ok\":true}\n");
-}
-
 static void json_esc_to(FILE *f, const char *in) {
     if (!in) in = "";
     for (size_t i = 0; in[i]; i++) {
@@ -120,7 +139,7 @@ static void json_esc_to(FILE *f, const char *in) {
     }
 }
 
-/* ── File helpers ───────────────────────────────────────────────────────── */
+/* ── File helpers ──────────────────────────────────────────────────────── */
 
 static char *read_file(const char *path) {
     FILE *f = fopen(path, "r");
@@ -137,60 +156,82 @@ static char *read_file(const char *path) {
     return buf;
 }
 
-/* Tail last N lines from a newline-delimited file. Returns heap; caller frees. */
 static char *read_file_tail(const char *path, int max_lines) {
     char *all = read_file(path);
     if (!all) return strdup("");
-    /* count newlines; keep last max_lines */
     int count = 0;
     for (char *p = all; *p; p++) if (*p == '\n') count++;
     if (count <= max_lines) return all;
-
     int skip = count - max_lines;
     char *p = all;
-    while (skip > 0 && *p) {
-        if (*p == '\n') skip--;
-        p++;
-    }
+    while (skip > 0 && *p) { if (*p == '\n') skip--; p++; }
     char *tail = strdup(p);
     free(all);
     return tail;
 }
 
-/* ── Config field table ─────────────────────────────────────────────────── */
+/* ── File-based config access ─────────────────────────────────────────── */
+/* Replaces axparameter: daemon writes CONFIG_FILE, CGI reads it.          */
 
-typedef struct { const char *param; const char *form; } FieldMap;
-static const FieldMap FIELDS[] = {
-    { "SystemEnabled",        "system_enabled" },
-    { "ZipCode",              "zip" },
-    { "LatOverride",          "lat_override" },
-    { "LonOverride",          "lon_override" },
-    { "WeatherProvider",      "weather_provider" },
-    { "NWSUserAgent",         "nws_user_agent" },
-    { "PollInterval",         "poll_interval" },
-    { "AlertMap",             "alert_map" },
-    { "OverlayEnabled",       "overlay_enabled" },
-    { "OverlayPosition",      "overlay_position" },
-    { "OverlayTemplate",      "overlay_template" },
-    { "OverlayAlertTemplate", "overlay_alert_template" },
-    { "OverlayMaxAlerts",     "overlay_max_alerts" },
-    { "WebhookEnabled",       "webhook_enabled" },
-    { "WebhookUrl",           "webhook_url" },
-    { "WebhookOnAlertsOnly",  "webhook_on_alerts_only" },
-    { "VapixUser",            "vapix_user" },
-    { "VapixPass",            "vapix_pass" },
-    { "MockMode",             "mock_mode" },
-    { NULL, NULL }
-};
+static cJSON *g_config = NULL;   /* loaded once in main() */
 
-/* ── Endpoints ──────────────────────────────────────────────────────────── */
+static void config_load(void) {
+    char *raw = read_file(CONFIG_FILE);
+    if (raw) {
+        g_config = cJSON_Parse(raw);
+        free(raw);
+    }
+    if (!g_config)
+        g_config = cJSON_CreateObject();
+}
+
+/* Get a config value.  Returns heap string; caller frees.
+ * Falls back to compiled default if key is absent.             */
+static char *cfg_get(const char *param_name) {
+    cJSON *v = cJSON_GetObjectItem(g_config, param_name);
+    if (cJSON_IsString(v) && v->valuestring)
+        return strdup(v->valuestring);
+    /* Fall back to compiled default */
+    for (int i = 0; FIELDS[i].param; i++)
+        if (strcmp(FIELDS[i].param, param_name) == 0)
+            return strdup(FIELDS[i].defval);
+    return strdup("");
+}
+
+static int cfg_get_int(const char *param_name, int def) {
+    char *s = cfg_get(param_name);
+    int v = (s && *s) ? atoi(s) : def;
+    free(s);
+    return v;
+}
+
+/* Write a full config JSON to SAVE_FILE and signal the daemon. */
+static int config_save(cJSON *new_cfg) {
+    char *json = cJSON_Print(new_cfg);
+    if (!json) return 0;
+    FILE *f = fopen(SAVE_FILE, "w");
+    if (!f) { free(json); return 0; }
+    fputs(json, f);
+    fclose(f);
+    free(json);
+
+    /* Signal daemon to pick up changes */
+    char *pidstr = read_file(PID_FILE);
+    if (pidstr) {
+        pid_t pid = (pid_t)atoi(pidstr);
+        if (pid > 1) kill(pid, SIGUSR1);
+        free(pidstr);
+    }
+    return 1;
+}
+
+/* ── Endpoints ─────────────────────────────────────────────────────────── */
 
 static void endpoint_config(void) {
     json_header();
     printf("{\n");
     for (int i = 0; FIELDS[i].param; i++) {
-        char *v = params_get(FIELDS[i].param);
-        /* Don't echo vapix password — send empty if set, or "" if unset. */
+        char *v = cfg_get(FIELDS[i].param);
         int is_secret = (strcmp(FIELDS[i].param, "VapixPass") == 0);
         printf("  \"%s\": \"", FIELDS[i].form);
         if (is_secret) {
@@ -219,7 +260,10 @@ static void endpoint_save(const char *body) {
     KV kv[64] = {0};
     int n = parse_kv(body, kv, 64);
 
-    int saved = 0, errors = 0;
+    /* Start with current config, overlay changed fields */
+    cJSON *save = g_config ? cJSON_Duplicate(g_config, 1) : cJSON_CreateObject();
+
+    int saved = 0;
     for (int i = 0; i < n; i++) {
         const char *param_name = NULL;
         for (int m = 0; FIELDS[m].param; m++) {
@@ -230,24 +274,27 @@ static void endpoint_save(const char *body) {
         }
         if (!param_name) continue;
 
-        /* Don't overwrite password with placeholder value */
+        /* Don't overwrite password with placeholder */
         if (strcmp(param_name, "VapixPass") == 0
             && strcmp(kv[i].value, "__SET__") == 0) continue;
 
-        GError *err = NULL;
-        if (params_set(param_name, kv[i].value, &err)) saved++;
-        else { errors++; if (err) g_error_free(err); }
+        cJSON_DeleteItemFromObject(save, param_name);
+        cJSON_AddStringToObject(save, param_name, kv[i].value);
+        saved++;
     }
     free_kv(kv, n);
 
+    int ok = config_save(save);
+    cJSON_Delete(save);
+
     json_header();
     printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
-           errors == 0 ? "true" : "false", saved, errors);
+           ok ? "true" : "false", saved, ok ? 0 : 1);
 }
 
 static void endpoint_ports(void) {
-    char *u = params_get("VapixUser");
-    char *p = params_get("VapixPass");
+    char *u = cfg_get("VapixUser");
+    char *p = cfg_get("VapixPass");
     int max_ports = 32;
     vapix_probe_virtual_ports(u, p, &max_ports);
     free(u); free(p);
@@ -256,8 +303,8 @@ static void endpoint_ports(void) {
 }
 
 static void endpoint_device(void) {
-    char *u = params_get("VapixUser");
-    char *p = params_get("VapixPass");
+    char *u = cfg_get("VapixUser");
+    char *p = cfg_get("VapixPass");
     char *info = vapix_device_info(u, p);
     json_header();
     printf("{\"raw\":\"");
@@ -287,11 +334,9 @@ static void endpoint_history(void) {
 
 static void endpoint_logs(void) {
     json_header();
-    /* Best-effort tail of messages. Many ACAPs don't have /var/log/messages
-     * readable; so fall back to syslog recent write to our own STATUS_FILE
-     * as an alternative. This endpoint is primarily diagnostic. */
     char *log = NULL;
-    const char *paths[] = { "/var/log/messages", "/var/log/syslog", "/var/log/weather_acap.log", NULL };
+    const char *paths[] = { "/var/log/messages", "/var/log/syslog",
+                            "/var/log/weather_acap.log", NULL };
     for (int i = 0; paths[i] && !log; i++) {
         if (access(paths[i], R_OK) == 0)
             log = read_file_tail(paths[i], 60);
@@ -303,18 +348,17 @@ static void endpoint_logs(void) {
 }
 
 static void endpoint_preview_overlay(void) {
-    char *pos   = params_get("OverlayPosition");
-    char *tmpl  = params_get("OverlayTemplate");
-    char *atmpl = params_get("OverlayAlertTemplate");
-    int   max   = params_get_int("OverlayMaxAlerts", 3);
+    char *pos   = cfg_get("OverlayPosition");
+    char *tmpl  = cfg_get("OverlayTemplate");
+    char *atmpl = cfg_get("OverlayAlertTemplate");
+    int   max   = cfg_get_int("OverlayMaxAlerts", 3);
 
-    /* Use latest status snapshot for realistic preview */
     char *snap_raw = read_file(STATUS_FILE);
     WeatherSnapshot snap;
     memset(&snap, 0, sizeof(snap));
     snap.conditions.valid = 1;
     snprintf(snap.conditions.description, sizeof(snap.conditions.description), "Sample Conditions");
-    snprintf(snap.conditions.provider,    sizeof(snap.conditions.provider), "preview");
+    snprintf(snap.conditions.provider, sizeof(snap.conditions.provider), "preview");
     snap.conditions.temp_f         = 72.0;
     snap.conditions.wind_speed_mph = 8.0;
     snap.conditions.wind_dir_deg   = 225;
@@ -322,21 +366,20 @@ static void endpoint_preview_overlay(void) {
 
     if (snap_raw) {
         cJSON *root = cJSON_Parse(snap_raw);
-        cJSON *ss   = root ? cJSON_GetObjectItem(root, "snapshot") : NULL;
-        cJSON *cond = ss   ? cJSON_GetObjectItem(ss, "conditions") : NULL;
+        cJSON *cond = root ? cJSON_GetObjectItem(root, "conditions") : NULL;
         if (cond) {
-            cJSON *t = cJSON_GetObjectItem(cond, "temp_f");
-            cJSON *d = cJSON_GetObjectItem(cond, "description");
-            cJSON *w = cJSON_GetObjectItem(cond, "wind_speed_mph");
+            cJSON *t  = cJSON_GetObjectItem(cond, "temp_f");
+            cJSON *d  = cJSON_GetObjectItem(cond, "description");
+            cJSON *w  = cJSON_GetObjectItem(cond, "wind_speed_mph");
             cJSON *wd = cJSON_GetObjectItem(cond, "wind_dir_deg");
-            cJSON *h = cJSON_GetObjectItem(cond, "humidity_pct");
-            if (cJSON_IsNumber(t)) snap.conditions.temp_f = t->valuedouble;
+            cJSON *h  = cJSON_GetObjectItem(cond, "humidity_pct");
+            if (cJSON_IsNumber(t))  snap.conditions.temp_f = t->valuedouble;
             if (cJSON_IsString(d))
                 snprintf(snap.conditions.description, sizeof(snap.conditions.description),
                          "%s", d->valuestring);
-            if (cJSON_IsNumber(w)) snap.conditions.wind_speed_mph = w->valuedouble;
+            if (cJSON_IsNumber(w))  snap.conditions.wind_speed_mph = w->valuedouble;
             if (cJSON_IsNumber(wd)) snap.conditions.wind_dir_deg = (int)wd->valuedouble;
-            if (cJSON_IsNumber(h)) snap.conditions.humidity_pct = (int)h->valuedouble;
+            if (cJSON_IsNumber(h))  snap.conditions.humidity_pct = (int)h->valuedouble;
         }
         cJSON_Delete(root);
     }
@@ -364,11 +407,11 @@ static void endpoint_preview_overlay(void) {
 }
 
 static void endpoint_test_weather(void) {
-    char *zip    = params_get("ZipCode");
-    char *lat    = params_get("LatOverride");
-    char *lon    = params_get("LonOverride");
-    char *prov   = params_get("WeatherProvider");
-    char *ua     = params_get("NWSUserAgent");
+    char *zip  = cfg_get("ZipCode");
+    char *lat  = cfg_get("LatOverride");
+    char *lon  = cfg_get("LonOverride");
+    char *prov = cfg_get("WeatherProvider");
+    char *ua   = cfg_get("NWSUserAgent");
 
     WeatherSnapshot snap;
     memset(&snap, 0, sizeof(snap));
@@ -392,8 +435,8 @@ static void endpoint_test_weather(void) {
 }
 
 static void endpoint_test_vapix(void) {
-    char *u = params_get("VapixUser");
-    char *p = params_get("VapixPass");
+    char *u = cfg_get("VapixUser");
+    char *p = cfg_get("VapixPass");
     long code = 0;
     char *body = vapix_get("/axis-cgi/param.cgi?action=list&group=root.Brand", u, p, &code);
     int has_video = vapix_has_video(u, p);
@@ -421,8 +464,8 @@ static int parse_query_int(const char *qs, const char *key, int def) {
 static void endpoint_fire_port(const char *qs, int activate) {
     int port = parse_query_int(qs, "port", 0);
     if (port <= 0) { err_json("missing or invalid port"); return; }
-    char *u = params_get("VapixUser");
-    char *p = params_get("VapixPass");
+    char *u = cfg_get("VapixUser");
+    char *p = cfg_get("VapixPass");
     long code = vapix_port_set(port, activate, u, p);
     free(u); free(p);
     json_header();
@@ -431,9 +474,9 @@ static void endpoint_fire_port(const char *qs, int activate) {
 }
 
 static void endpoint_clear_all(void) {
-    char *u   = params_get("VapixUser");
-    char *p   = params_get("VapixPass");
-    char *mp  = params_get("AlertMap");
+    char *u  = cfg_get("VapixUser");
+    char *p  = cfg_get("VapixPass");
+    char *mp = cfg_get("AlertMap");
     AlertMap map;
     alerts_map_parse(mp, &map);
     int cleared = 0;
@@ -447,10 +490,9 @@ static void endpoint_clear_all(void) {
 }
 
 static void endpoint_fire_drill(void) {
-    /* Activate every enabled port; UI instructs user to call clear_all to reset. */
-    char *u  = params_get("VapixUser");
-    char *p  = params_get("VapixPass");
-    char *mp = params_get("AlertMap");
+    char *u  = cfg_get("VapixUser");
+    char *p  = cfg_get("VapixPass");
+    char *mp = cfg_get("AlertMap");
     AlertMap map;
     alerts_map_parse(mp, &map);
     int fired = 0;
@@ -466,7 +508,7 @@ static void endpoint_fire_drill(void) {
 }
 
 static void endpoint_test_webhook(void) {
-    char *url = params_get("WebhookUrl");
+    char *url = cfg_get("WebhookUrl");
     if (!url || !*url) { free(url); err_json("webhook URL not set"); return; }
 
     WeatherSnapshot snap;
@@ -480,7 +522,8 @@ static void endpoint_test_webhook(void) {
     free(url);
 
     json_header();
-    printf("{\"ok\":%s,\"http_code\":%ld}\n", (code >= 200 && code < 300) ? "true" : "false", code);
+    printf("{\"ok\":%s,\"http_code\":%ld}\n",
+           (code >= 200 && code < 300) ? "true" : "false", code);
 }
 
 static void endpoint_export(void) {
@@ -488,7 +531,7 @@ static void endpoint_export(void) {
            "Content-Disposition: attachment; filename=\"weather_acap_config.json\"\r\n\r\n");
     printf("{\n  \"app\": \"weather_acap\",\n  \"version\": 1,\n  \"config\": {\n");
     for (int i = 0; FIELDS[i].param; i++) {
-        char *v = params_get(FIELDS[i].param);
+        char *v = cfg_get(FIELDS[i].param);
         int is_secret = (strcmp(FIELDS[i].param, "VapixPass") == 0);
         printf("    \"%s\": \"", FIELDS[i].param);
         if (!is_secret) json_esc_to(stdout, v);
@@ -505,29 +548,34 @@ static void endpoint_import(const char *body) {
     cJSON *cfg = cJSON_GetObjectItem(root, "config");
     if (!cfg) { cJSON_Delete(root); err_json("missing config object"); return; }
 
-    int saved = 0, errors = 0;
+    /* Build a new config object from current + imported values */
+    cJSON *save = g_config ? cJSON_Duplicate(g_config, 1) : cJSON_CreateObject();
+    int saved = 0;
     for (int i = 0; FIELDS[i].param; i++) {
         cJSON *v = cJSON_GetObjectItem(cfg, FIELDS[i].param);
         if (!cJSON_IsString(v)) continue;
         if (strcmp(FIELDS[i].param, "VapixPass") == 0 && !*v->valuestring) continue;
-        GError *e = NULL;
-        if (params_set(FIELDS[i].param, v->valuestring, &e)) saved++;
-        else { errors++; if (e) g_error_free(e); }
+        cJSON_DeleteItemFromObject(save, FIELDS[i].param);
+        cJSON_AddStringToObject(save, FIELDS[i].param, v->valuestring);
+        saved++;
     }
     cJSON_Delete(root);
 
+    int ok = config_save(save);
+    cJSON_Delete(save);
+
     json_header();
     printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
-           errors == 0 ? "true" : "false", saved, errors);
+           ok ? "true" : "false", saved, ok ? 0 : 1);
 }
 
-/* ── Dispatcher ─────────────────────────────────────────────────────────── */
+/* ── Dispatcher ────────────────────────────────────────────────────────── */
 
 static char *read_post_body(void) {
     const char *cl_str = getenv("CONTENT_LENGTH");
     int cl = cl_str ? atoi(cl_str) : 0;
     if (cl <= 0) return strdup("");
-    if (cl > 65536) cl = 65536;   /* safety cap */
+    if (cl > 65536) cl = 65536;
     char *body = (char *)malloc(cl + 1);
     if (!body) return NULL;
     size_t r = fread(body, 1, cl, stdin);
@@ -548,16 +596,14 @@ static const char *query_action(const char *qs) {
 }
 
 int main(void) {
-    /* Use readonly init — the daemon creates parameters, the CGI only reads
-     * and updates them.  If axparameter is unavailable the CGI still works
-     * with compiled-in defaults (params_get handles this transparently). */
-    params_init_readonly();
+    /* Load config from the file the daemon writes — no axparameter needed */
+    config_load();
 
     const char *method = getenv("REQUEST_METHOD");
     const char *qs     = getenv("QUERY_STRING");
     const char *action = query_action(qs);
 
-    if (!*action) action = "config";   /* default */
+    if (!*action) action = "config";
 
     int is_post = method && strcmp(method, "POST") == 0;
 
@@ -590,7 +636,6 @@ int main(void) {
         err_json("unknown action or wrong method");
     }
 
-    (void)ok_json;  /* referenced elsewhere if needed */
-    params_cleanup();
+    cJSON_Delete(g_config);
     return 0;
 }

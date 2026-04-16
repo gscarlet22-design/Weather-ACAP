@@ -6,6 +6,7 @@
  *            record history → optionally POST webhook → heartbeat.
  */
 #include "params.h"
+#include "cJSON.h"
 #include "weather_api.h"
 #include "alerts.h"
 #include "overlay.h"
@@ -23,16 +24,25 @@
 
 #define HEARTBEAT_FILE "/tmp/weather_acap_heartbeat"
 #define STATUS_FILE    "/tmp/weather_acap_status.json"
+#define CONFIG_FILE    "/tmp/weather_acap_config.json"
+#define SAVE_FILE      "/tmp/weather_acap_save.json"
+#define PID_FILE       "/tmp/weather_acap.pid"
 #define MIN_POLL_SEC   60
 
 static GMainLoop *g_loop     = NULL;
 static guint      g_timer_id = 0;
+static volatile sig_atomic_t g_reload_flag = 0;
 
-/* ── Signal handler ─────────────────────────────────────────────────────── */
+/* ── Signal handlers ────────────────────────────────────────────────────── */
 
 static void on_signal(int sig) {
     (void)sig;
     if (g_loop) g_main_loop_quit(g_loop);
+}
+
+static void on_sigusr1(int sig) {
+    (void)sig;
+    g_reload_flag = 1;   /* checked in poll loop */
 }
 
 /* ── Webhook context passed to alert callback ───────────────────────────── */
@@ -139,10 +149,90 @@ static void write_status(const WeatherSnapshot *snap,
     fclose(f);
 }
 
+/* ── Config file for CGI ────────────────────────────────────────────────── */
+/* The CGI cannot use axparameter (wrong process context), so the daemon
+ * writes current config to a JSON file that the CGI reads.               */
+
+static const char *CONFIG_PARAMS[] = {
+    "SystemEnabled", "ZipCode", "LatOverride", "LonOverride",
+    "WeatherProvider", "NWSUserAgent", "PollInterval", "AlertMap",
+    "OverlayEnabled", "OverlayPosition", "OverlayTemplate",
+    "OverlayAlertTemplate", "OverlayMaxAlerts",
+    "WebhookEnabled", "WebhookUrl", "WebhookOnAlertsOnly",
+    "VapixUser", "VapixPass", "MockMode", NULL
+};
+
+static void write_config_file(void) {
+    FILE *f = fopen(CONFIG_FILE, "w");
+    if (!f) return;
+    fprintf(f, "{\n");
+    for (int i = 0; CONFIG_PARAMS[i]; i++) {
+        char *v = params_get(CONFIG_PARAMS[i]);
+        char esc[1024];
+        json_esc(v, esc, sizeof(esc));
+        fprintf(f, "  \"%s\": \"%s\"%s\n",
+                CONFIG_PARAMS[i], esc,
+                CONFIG_PARAMS[i + 1] ? "," : "");
+        free(v);
+    }
+    fprintf(f, "}\n");
+    fclose(f);
+}
+
+static void write_pid_file(void) {
+    FILE *f = fopen(PID_FILE, "w");
+    if (f) { fprintf(f, "%d\n", (int)getpid()); fclose(f); }
+}
+
+/* Apply a save file written by the CGI (form-encoded or JSON). */
+static void apply_save_file(void) {
+    char *raw = NULL;
+    FILE *f = fopen(SAVE_FILE, "r");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    rewind(f);
+    if (sz > 0) {
+        raw = (char *)malloc(sz + 1);
+        if (raw) {
+            size_t nr = fread(raw, 1, sz, f);
+            raw[nr] = '\0';
+        }
+    }
+    fclose(f);
+    unlink(SAVE_FILE);   /* consume it */
+    if (!raw) return;
+
+    /* Parse JSON object — keys are param names, values are strings */
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) return;
+
+    for (int i = 0; CONFIG_PARAMS[i]; i++) {
+        cJSON *v = cJSON_GetObjectItem(root, CONFIG_PARAMS[i]);
+        if (cJSON_IsString(v)) {
+            GError *e = NULL;
+            params_set(CONFIG_PARAMS[i], v->valuestring, &e);
+            if (e) g_error_free(e);
+        }
+    }
+    cJSON_Delete(root);
+
+    /* Re-export so CGI sees updated values */
+    write_config_file();
+    syslog(LOG_INFO, "weather_acap: applied save file from CGI");
+}
+
 /* ── Poll callback ───────────────────────────────────────────────────────── */
 
 static gboolean do_poll(gpointer user_data) {
     (void)user_data;
+
+    /* Check if CGI wrote a save file (SIGUSR1) */
+    if (g_reload_flag) {
+        g_reload_flag = 0;
+        apply_save_file();
+    }
 
     char *enabled_s = params_get("SystemEnabled");
     int enabled = enabled_s && strcasecmp(enabled_s, "yes") == 0;
@@ -268,6 +358,7 @@ int main(void) {
 
     signal(SIGTERM, on_signal);
     signal(SIGINT,  on_signal);
+    signal(SIGUSR1, on_sigusr1);
 
     GError *err = NULL;
     if (!params_init(&err)) {
@@ -278,6 +369,10 @@ int main(void) {
     }
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    /* Write PID and config file so the CGI can read them */
+    write_pid_file();
+    write_config_file();
 
     do_poll(NULL);   /* immediate first poll */
 

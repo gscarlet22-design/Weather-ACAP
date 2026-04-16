@@ -10,10 +10,17 @@
 MAIN_PROG = weather_acap
 CGI_PROG  = html/weather_acap.cgi  # .cgi extension required by camera's lighttpd
 
-PKGS    = glib-2.0 axparameter libcurl
-CFLAGS += $(shell pkg-config --cflags $(PKGS)) \
-          -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
-LDLIBS  = $(shell pkg-config --libs $(PKGS)) -lm
+# Daemon uses all three libraries; CGI only uses libcurl (no glib/axparameter)
+DAEMON_PKGS = glib-2.0 axparameter libcurl
+CGI_PKGS    = libcurl
+
+CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
+
+DAEMON_CFLAGS = $(shell pkg-config --cflags $(DAEMON_PKGS))
+DAEMON_LDLIBS = $(shell pkg-config --libs $(DAEMON_PKGS)) -lm
+
+CGI_CFLAGS    = $(shell pkg-config --cflags $(CGI_PKGS))
+CGI_LDLIBS    = $(shell pkg-config --libs $(CGI_PKGS)) -lm
 
 # Main daemon sources
 MAIN_SRCS = weather_acap.c nws.c openmeteo.c weather_api.c \
@@ -21,30 +28,34 @@ MAIN_SRCS = weather_acap.c nws.c openmeteo.c weather_api.c \
             vapix.c history.c webhook.c
 MAIN_OBJS = $(MAIN_SRCS:.c=.o)
 
-# CGI sources (shares params.o, cJSON.o, vapix.o, weather_api.o, overlay.o, alerts.o, webhook.o,
-# nws.o, openmeteo.o — many because the CGI exposes the full engine for diagnostics.)
+# CGI sources — no params.o (no axparameter), uses file-based config instead
 CGI_SRCS = config_cgi.c
+CGI_SHARED_OBJS = cgi_cJSON.o cgi_vapix.o cgi_weather_api.o cgi_nws.o \
+                  cgi_openmeteo.o cgi_overlay.o cgi_alerts.o cgi_webhook.o
 
 .PHONY: all clean
 
 all: $(MAIN_PROG) $(CGI_PROG)
 
-# Main daemon — CFLAGS carries --sysroot and -L needed for cross-linking
+# ── Daemon objects (compiled with glib/axparameter flags) ────────────────
+$(MAIN_OBJS): %.o: %.c
+	$(CC) $(CFLAGS) $(DAEMON_CFLAGS) -c -o $@ $<
+
 $(MAIN_PROG): $(MAIN_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ $^ $(DAEMON_LDLIBS)
 
-# Config CGI — built into html/ and shares prebuilt object files from the main daemon
-$(CGI_PROG): config_cgi.o params.o cJSON.o vapix.o \
-             weather_api.o nws.o openmeteo.o overlay.o alerts.o webhook.o
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+# ── CGI objects (compiled with libcurl flags only, no glib) ──────────────
+cgi_config_cgi.o: config_cgi.c
+	$(CC) $(CFLAGS) $(CGI_CFLAGS) -c -o $@ $<
 
-$(CGI_PROG): | html
+cgi_%.o: %.c
+	$(CC) $(CFLAGS) $(CGI_CFLAGS) -c -o $@ $<
+
+$(CGI_PROG): cgi_config_cgi.o $(CGI_SHARED_OBJS) | html
+	$(CC) $(CFLAGS) -o $@ $^ $(CGI_LDLIBS)
 
 html:
 	mkdir -p html
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
-
 clean:
-	$(RM) *.o $(MAIN_PROG) $(CGI_PROG)
+	$(RM) *.o cgi_*.o $(MAIN_PROG) $(CGI_PROG)
