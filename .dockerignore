@@ -1,0 +1,41 @@
+# Exclude everything not needed inside the container image.
+# Keeps the image lean and avoids leaking dev/test files onto the device.
+
+# Version control
+.git/
+.gitignore
+
+# GitHub Actions
+.github/
+
+# Test suite (not needed at runtime)
+tests/
+
+# Documentation
+*.md
+docs/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Build artifacts
+*.eap
+*.eap4
+image.tar
+*.tar
+
+# Dev overrides
+docker-compose.override.yml
+demo.py
+
+# Secrets / local config (never bake credentials into the image)
+.env
+.env.*
+app/config_store.json
+secrets.json

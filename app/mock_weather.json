@@ -1,0 +1,84 @@
+{
+  "_comment": "Mock weather data for simulation mode (MOCK_MODE=true). Edit this file to test different alert scenarios without hitting the live NWS API. Place this file at /app/mock_weather.json inside the container.",
+
+  "zip_code": "73301",
+  "location_name": "Austin, TX (MOCK)",
+  "coordinates": {
+    "lat": 30.2672,
+    "lon": -97.7431
+  },
+
+  "current_conditions": {
+    "temperature_f": 91,
+    "temperature_c": 32.8,
+    "relative_humidity_pct": 68,
+    "wind_speed_mph": 22,
+    "wind_direction": "SSW",
+    "sky_condition": "Mostly Cloudy",
+    "visibility_miles": 7,
+    "dewpoint_f": 78,
+    "barometric_pressure_inhg": 29.62,
+    "heat_index_f": 102,
+    "observed_at": "2026-04-05T18:45:00-05:00"
+  },
+
+  "active_alerts": [
+    {
+      "id": "urn:oid:2.49.0.1.840.0.mock-tornado-001",
+      "event": "Tornado Warning",
+      "headline": "Tornado Warning issued April 5 at 6:45PM CDT until April 5 at 7:30PM CDT by NWS Austin/San Antonio TX",
+      "description": "THE NATIONAL WEATHER SERVICE IN AUSTIN/SAN ANTONIO HAS ISSUED A TORNADO WARNING FOR CENTRAL TRAVIS COUNTY IN SOUTH CENTRAL TEXAS. AT 644 PM CDT, A SEVERE THUNDERSTORM CAPABLE OF PRODUCING A TORNADO WAS LOCATED NEAR PFLUGERVILLE, MOVING NORTHEAST AT 35 MPH. HAZARD: TORNADO. SOURCE: RADAR INDICATED. IMPACT: FLYING DEBRIS WILL BE DANGEROUS TO THOSE CAUGHT WITHOUT SHELTER. MOBILE HOMES WILL BE DAMAGED OR DESTROYED. DAMAGE TO ROOFS, WINDOWS, AND VEHICLES WILL OCCUR. TREE DAMAGE IS LIKELY.",
+      "instruction": "TAKE COVER NOW! Move to a basement or an interior room on the lowest floor of a sturdy building. Avoid windows. If you are outdoors, in a mobile home, or in a vehicle, move to the closest substantial shelter and protect yourself from flying debris.",
+      "severity": "Extreme",
+      "certainty": "Observed",
+      "urgency": "Immediate",
+      "status": "Actual",
+      "message_type": "Alert",
+      "category": "Met",
+      "effective": "2026-04-05T18:44:00-05:00",
+      "onset": "2026-04-05T18:44:00-05:00",
+      "expires": "2026-04-05T19:30:00-05:00",
+      "ends": "2026-04-05T19:30:00-05:00",
+      "sender_name": "NWS Austin/San Antonio TX",
+      "areas_affected": "Central Travis"
+    },
+    {
+      "id": "urn:oid:2.49.0.1.840.0.mock-svr-001",
+      "event": "Severe Thunderstorm Warning",
+      "headline": "Severe Thunderstorm Warning issued April 5 at 6:30PM CDT until April 5 at 7:15PM CDT by NWS Austin/San Antonio TX",
+      "description": "AT 629 PM CDT, A SEVERE THUNDERSTORM WAS LOCATED NEAR ROUND ROCK, MOVING NORTHEAST AT 40 MPH. HAZARD: 70 MPH WIND GUSTS AND QUARTER SIZE HAIL. SOURCE: RADAR INDICATED. IMPACT: HAIL DAMAGE TO VEHICLES IS EXPECTED. EXPECT CONSIDERABLE TREE DAMAGE. WIND DAMAGE IS ALSO LIKELY TO MOBILE HOMES, ROOFS, AND OUTBUILDINGS.",
+      "instruction": "For your protection move to an interior room on the lowest floor of a building.",
+      "severity": "Severe",
+      "certainty": "Observed",
+      "urgency": "Immediate",
+      "status": "Actual",
+      "message_type": "Alert",
+      "category": "Met",
+      "effective": "2026-04-05T18:29:00-05:00",
+      "onset": "2026-04-05T18:29:00-05:00",
+      "expires": "2026-04-05T19:15:00-05:00",
+      "ends": "2026-04-05T19:15:00-05:00",
+      "sender_name": "NWS Austin/San Antonio TX",
+      "areas_affected": "Williamson; Travis"
+    },
+    {
+      "id": "urn:oid:2.49.0.1.840.0.mock-flash-001",
+      "event": "Flash Flood Warning",
+      "headline": "Flash Flood Warning issued April 5 at 6:15PM CDT until April 5 at 9:00PM CDT by NWS Austin/San Antonio TX",
+      "description": "THE NATIONAL WEATHER SERVICE HAS ISSUED A FLASH FLOOD WARNING FOR BARTON CREEK AND ONION CREEK IN TRAVIS COUNTY. HEAVY RAINFALL OF 3 TO 5 INCHES HAS ALREADY FALLEN. AN ADDITIONAL 1 TO 2 INCHES IS EXPECTED. TURN AROUND, DON'T DROWN.",
+      "instruction": "Move to higher ground now. Act quickly to protect your life.",
+      "severity": "Severe",
+      "certainty": "Likely",
+      "urgency": "Immediate",
+      "status": "Actual",
+      "message_type": "Alert",
+      "category": "Met",
+      "effective": "2026-04-05T18:15:00-05:00",
+      "onset": "2026-04-05T18:15:00-05:00",
+      "expires": "2026-04-05T21:00:00-05:00",
+      "ends": "2026-04-05T21:00:00-05:00",
+      "sender_name": "NWS Austin/San Antonio TX",
+      "areas_affected": "Travis"
+    }
+  ]
+}

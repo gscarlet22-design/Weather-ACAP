@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weather ACAP</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="sky-backdrop"></div>
+
+  <header class="app-header">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="cloudg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#e3f2fd"/>
+            <stop offset="100%" stop-color="#90caf9"/>
+          </linearGradient>
+        </defs>
+        <path fill="url(#cloudg)" d="M50 38c4 0 7-3 7-7 0-4-3-7-7-7a10 10 0 0 0-20-2 8 8 0 0 0-10 8c-4 0-7 3-7 7s3 7 7 7h30z"/>
+        <path fill="#ffd54f" d="M34 34l-8 14h6l-4 10 12-16h-6z"/>
+      </svg>
+      <div class="brand-text">
+        <h1>Weather Monitor</h1>
+        <span class="subtitle">Self-contained weather-alert radio for Axis</span>
+      </div>
+    </div>
+    <div class="status-summary">
+      <div class="temp-display">
+        <span id="current-temp">--</span><span class="degree">&deg;</span><span class="temp-unit">F</span>
+      </div>
+      <div class="desc-line">
+        <div id="current-desc" class="desc">loading&hellip;</div>
+        <div id="status-pill" class="pill pill-neutral">Starting</div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab-btn active" data-tab="dashboard"    type="button">Dashboard</button>
+    <button class="tab-btn"        data-tab="location"     type="button">Location</button>
+    <button class="tab-btn"        data-tab="alerts"       type="button">Alerts &amp; Triggers</button>
+    <button class="tab-btn"        data-tab="overlay"      type="button">Overlay</button>
+    <button class="tab-btn"        data-tab="diagnostics"  type="button">Diagnostics</button>
+    <button class="tab-btn"        data-tab="advanced"     type="button">Advanced</button>
+  </nav>
+
+  <main class="content">
+
+    <!-- Dashboard -->
+    <section id="tab-dashboard" class="tab-pane active">
+      <div class="grid">
+        <div class="card card-conditions">
+          <div class="card-header"><h2>Current Conditions</h2></div>
+          <div class="card-body">
+            <div class="big-stat">
+              <span class="stat-value" id="dash-temp">--</span>
+              <span class="stat-unit">&deg;F</span>
+            </div>
+            <div class="sub-stats">
+              <div><label>Conditions</label><span id="dash-desc">&mdash;</span></div>
+              <div><label>Wind</label><span id="dash-wind">&mdash;</span></div>
+              <div><label>Humidity</label><span id="dash-hum">&mdash;</span></div>
+              <div><label>Provider</label><span id="dash-provider">&mdash;</span></div>
+              <div><label>Coordinates</label><span id="dash-coords">&mdash;</span></div>
+              <div><label>Last poll</label><span id="dash-lastpoll">&mdash;</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card card-alerts">
+          <div class="card-header"><h2>Active Alerts</h2><span class="pill pill-alert hidden" id="alerts-count">0</span></div>
+          <div class="card-body">
+            <ul id="dash-alerts" class="alerts-list">
+              <li class="empty">No active alerts for this location.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="card card-ports">
+          <div class="card-header">
+            <h2>Virtual Input Ports</h2>
+            <small id="ports-max-info"></small>
+          </div>
+          <div class="card-body">
+            <div id="dash-ports" class="ports-grid"></div>
+            <p class="hint">Each enabled alert drives one virtual input port. Point your camera's Action Rules (or your VMS) at these ports to trigger responses.</p>
+          </div>
+        </div>
+
+        <div class="card card-history">
+          <div class="card-header"><h2>Recent History</h2></div>
+          <div class="card-body">
+            <ol id="dash-history" class="history-list">
+              <li class="empty">No alert activity recorded yet.</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Location -->
+    <section id="tab-location" class="tab-pane">
+      <div class="card">
+        <div class="card-header"><h2>Where are you?</h2></div>
+        <div class="card-body">
+          <div class="form-row">
+            <label for="f-zip">US ZIP Code</label>
+            <input id="f-zip" type="text" maxlength="10" placeholder="e.g. 60601">
+            <small>We geocode to the ZIP's centroid via the US Census service (no API key required).</small>
+          </div>
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-lat">Latitude override <small class="opt">(optional)</small></label>
+              <input id="f-lat" type="text" placeholder="e.g. 41.8781">
+            </div>
+            <div class="form-row">
+              <label for="f-lon">Longitude override <small class="opt">(optional)</small></label>
+              <input id="f-lon" type="text" placeholder="e.g. -87.6298">
+            </div>
+          </div>
+          <small class="hint">If the ZIP centroid isn't close enough (rural areas, mountain towns), enter exact coordinates. These take precedence over ZIP.</small>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>Weather Source</h2></div>
+        <div class="card-body">
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-provider">Provider</label>
+              <select id="f-provider">
+                <option value="auto">Auto &mdash; NWS first, fall back to Open-Meteo</option>
+                <option value="nws">NWS only (US, alerts included)</option>
+                <option value="openmeteo">Open-Meteo only (worldwide, no alerts)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label for="f-interval">Poll interval (seconds)</label>
+              <input id="f-interval" type="number" min="60" max="3600" step="30">
+              <small>Minimum 60s. NWS recommends &ge; 300s.</small>
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="f-ua">NWS User-Agent</label>
+            <input id="f-ua" type="text" placeholder="WeatherACAP/2.0 (you@example.com)">
+            <small>NWS requires a contact-identifying User-Agent. Please include an email address.</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" data-save="location" type="button">Save location settings</button>
+      </div>
+    </section>
+
+    <!-- Alerts & Triggers -->
+    <section id="tab-alerts" class="tab-pane">
+      <div class="card">
+        <div class="card-header">
+          <h2>Alert &rarr; Port Mapping</h2>
+          <span id="alerts-port-banner" class="pill pill-info"></span>
+        </div>
+        <div class="card-body">
+          <p class="hint">
+            Each row maps an NWS alert type to a VAPIX virtual input port. When that alert is active
+            for your location, the port is activated; when the alert clears, the port resets. Point
+            your camera's Action Rules or your VMS (e.g. Axis Camera Station Pro) at these ports to
+            trigger recordings, speakers, relays, or notifications.
+          </p>
+          <div class="alerts-table-wrap">
+            <table class="alerts-table">
+              <thead>
+                <tr>
+                  <th style="width:60px;">On</th>
+                  <th>Alert Type</th>
+                  <th style="width:100px;">Port #</th>
+                  <th style="width:180px;">Test</th>
+                  <th style="width:50px;"></th>
+                </tr>
+              </thead>
+              <tbody id="alerts-tbody"></tbody>
+            </table>
+          </div>
+          <div class="row-actions">
+            <button class="btn btn-ghost" id="alerts-add" type="button">+ Add alert type</button>
+            <button class="btn btn-ghost" id="alerts-auto-port" type="button">Auto-assign ports</button>
+            <button class="btn btn-primary" data-save="alerts" type="button">Save alert mapping</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Overlay -->
+    <section id="tab-overlay" class="tab-pane">
+      <div class="card">
+        <div class="card-header">
+          <h2>On-Video Overlay</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-overlay-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <p class="hint" id="overlay-video-hint">If your device has a camera, the template below is pushed to the video as a text overlay via the VAPIX overlay API.</p>
+
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-overlay-position">Position</label>
+              <select id="f-overlay-position">
+                <option value="topLeft">Top left</option>
+                <option value="topRight">Top right</option>
+                <option value="bottomLeft">Bottom left</option>
+                <option value="bottomRight">Bottom right</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label for="f-overlay-max">Max alerts to show</label>
+              <input id="f-overlay-max" type="number" min="1" max="10" step="1">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <label for="f-overlay-template">Conditions template</label>
+            <input id="f-overlay-template" type="text">
+            <small>Available: <code>{temp}</code> <code>{cond}</code> <code>{wind}</code> <code>{dir}</code> <code>{hum}</code> <code>{provider}</code> <code>{lat}</code> <code>{lon}</code> <code>{time}</code></small>
+          </div>
+          <div class="form-row">
+            <label for="f-overlay-alert-template">Alert prefix (prepended when alerts active)</label>
+            <input id="f-overlay-alert-template" type="text">
+            <small>Use <code>{alert_type}</code> for the joined list of active alert names.</small>
+          </div>
+
+          <div class="overlay-preview">
+            <div class="overlay-preview-label">Live preview</div>
+            <div class="overlay-preview-frame">
+              <div class="overlay-preview-video">
+                <div id="overlay-preview-text" class="overlay-text overlay-pos-topLeft">loading&hellip;</div>
+              </div>
+            </div>
+            <button class="btn btn-ghost btn-small" id="overlay-refresh-preview" type="button">Refresh preview</button>
+          </div>
+
+          <div class="form-actions">
+            <button class="btn btn-primary" data-save="overlay" type="button">Save overlay settings</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Diagnostics -->
+    <section id="tab-diagnostics" class="tab-pane">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header"><h2>Self-tests</h2></div>
+          <div class="card-body">
+            <p class="hint">Run these when something isn't behaving as expected.</p>
+            <div class="diag-row">
+              <button class="btn btn-ghost" id="diag-test-vapix" type="button">Test VAPIX (localhost)</button>
+              <div id="diag-result-vapix" class="diag-result">&mdash;</div>
+            </div>
+            <div class="diag-row">
+              <button class="btn btn-ghost" id="diag-test-weather" type="button">Test weather fetch</button>
+              <div id="diag-result-weather" class="diag-result">&mdash;</div>
+            </div>
+            <div class="diag-row">
+              <button class="btn btn-ghost" id="diag-test-webhook" type="button">Test webhook POST</button>
+              <div id="diag-result-webhook" class="diag-result">&mdash;</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h2>Manual port control</h2></div>
+          <div class="card-body">
+            <p class="hint">Useful for verifying your camera/VMS Action Rules without waiting for real weather.</p>
+            <div class="manual-port-row">
+              <input id="diag-port-num" type="number" min="1" max="64" placeholder="Port #">
+              <button class="btn btn-ghost" id="diag-fire-port" type="button">Activate</button>
+              <button class="btn btn-ghost" id="diag-clear-port" type="button">Clear</button>
+            </div>
+            <div class="diag-actions">
+              <button class="btn btn-warning" id="diag-firedrill" type="button">
+                <span class="bolt">&#9889;</span> Fire Drill &mdash; activate all enabled ports
+              </button>
+              <button class="btn btn-ghost" id="diag-clear-all" type="button">Clear all ports</button>
+            </div>
+            <div id="diag-manual-result" class="diag-result">&mdash;</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h2>Device info</h2></div>
+          <div class="card-body">
+            <pre id="diag-device-info" class="mono small scroll">Loading&hellip;</pre>
+            <button class="btn btn-ghost btn-small" id="diag-refresh-device" type="button">Refresh</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h2>Alert history</h2></div>
+          <div class="card-body">
+            <ol id="diag-history" class="history-list scroll"></ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Advanced -->
+    <section id="tab-advanced" class="tab-pane">
+      <div class="card">
+        <div class="card-header">
+          <h2>System</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-system-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>Master switch. Turn off to pause the poll loop without uninstalling.</small>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>VAPIX credentials</h2></div>
+        <div class="card-body">
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-vapix-user">Username</label>
+              <input id="f-vapix-user" type="text" autocomplete="username">
+            </div>
+            <div class="form-row">
+              <label for="f-vapix-pass">Password</label>
+              <input id="f-vapix-pass" type="password" autocomplete="new-password" placeholder="(unchanged)">
+            </div>
+          </div>
+          <small>Used for localhost VAPIX Digest auth (virtual ports + overlay). Required when your device is configured with authentication.</small>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Webhook on alerts</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-webhook-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>POST a JSON payload to any URL when an alert activates or clears. Great for MQTT bridges, Slack webhooks, or calling an Axis Camera Station Pro event endpoint.</small>
+          <div class="form-row">
+            <label for="f-webhook-url">URL</label>
+            <input id="f-webhook-url" type="url" placeholder="https://hooks.example.com/weather">
+          </div>
+          <div class="form-row">
+            <label class="checkbox">
+              <input id="f-webhook-alerts-only" type="checkbox">
+              <span>Only POST for alert transitions (skip routine polls)</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Mock mode</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-mock-mode">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>Skip real weather fetch and use a fake snapshot with a Tornado Warning active. Good for bench-testing VMS integrations.</small>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h2>Backup &amp; restore</h2></div>
+        <div class="card-body">
+          <div class="form-actions">
+            <a class="btn btn-ghost" id="adv-export" href="config_cgi?action=export">Download config JSON</a>
+            <label class="btn btn-ghost" for="adv-import-file">Upload config JSON</label>
+            <input id="adv-import-file" type="file" accept="application/json" style="display:none">
+          </div>
+          <small>Export from one device, import into another to deploy identical settings across a fleet.</small>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" data-save="advanced" type="button">Save advanced settings</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

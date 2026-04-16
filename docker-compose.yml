@@ -1,0 +1,81 @@
+# docker-compose.yml — Local development and off-device testing
+#
+# Usage (development, targeting a real Axis device):
+#   VAPIX_HOST=192.168.1.100 VAPIX_PASS=yourpass docker-compose up
+#
+# Usage (fully local dry run, no device):
+#   MOCK_MODE=true VAPIX_HOST=localhost docker-compose up
+#
+# The container uses --network host so VAPIX calls to localhost reach the
+# host machine's port 80.  When VAPIX_HOST is set to a remote device IP,
+# the calls go over the network instead.
+
+version: "3.9"
+
+services:
+  weather-acap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Override platform for local AMD64 development.
+      # Remove or change to linux/arm64 when building for a real device.
+      args:
+        BUILDPLATFORM: linux/amd64
+
+    image: weather-acap:dev
+
+    container_name: weather-acap
+
+    # Host networking gives the container access to localhost VAPIX endpoints.
+    # On Linux this works directly. On macOS/Windows Docker Desktop, set
+    # VAPIX_HOST to your device's IP address instead of localhost.
+    network_mode: host
+
+    restart: unless-stopped
+
+    environment:
+      # ── VAPIX credentials ───────────────────────────────────────────────────
+      VAPIX_HOST: ${VAPIX_HOST:-localhost}
+      VAPIX_USER: ${VAPIX_USER:-root}
+      VAPIX_PASS: ${VAPIX_PASS:-}
+
+      # ── Location ────────────────────────────────────────────────────────────
+      ZIP_CODE: ${ZIP_CODE:-}
+      LAT_OVERRIDE: ${LAT_OVERRIDE:-}
+      LON_OVERRIDE: ${LON_OVERRIDE:-}
+
+      # ── Behaviour ───────────────────────────────────────────────────────────
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-300}
+      VIRTUAL_PORT_START: ${VIRTUAL_PORT_START:-20}
+      MOCK_MODE: ${MOCK_MODE:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      OVERLAY_ENABLED: ${OVERLAY_ENABLED:-true}
+
+      # ── NWS User-Agent (required — replace with your contact email) ─────────
+      NWS_USER_AGENT: "WeatherACAP/1.0 (your-email@example.com)"
+
+      PYTHONUNBUFFERED: "1"
+
+    volumes:
+      # Mount the app directory so code changes are reflected without rebuilding.
+      # Remove this volume in production to use the baked-in image copy.
+      - ./app:/app:ro
+
+    ports:
+      # Config UI — only needed when NOT using host networking.
+      # With network_mode: host, port 8080 is already exposed on the host.
+      []
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os,time,sys; f='/tmp/heartbeat'; e=os.path.exists(f); age=time.time()-os.path.getmtime(f) if e else 9999; sys.exit(0 if age<700 else 1)"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

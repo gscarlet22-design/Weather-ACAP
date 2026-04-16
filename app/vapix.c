@@ -1,0 +1,131 @@
+#include "vapix.h"
+
+#include <curl/curl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <syslog.h>
+
+typedef struct { char *data; size_t size; } Buf;
+
+static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
+    Buf *b   = (Buf *)ud;
+    size_t n = sz * nmemb;
+    char  *p = realloc(b->data, b->size + n + 1);
+    if (!p) return 0;
+    b->data = p;
+    memcpy(b->data + b->size, ptr, n);
+    b->size += n;
+    b->data[b->size] = '\0';
+    return n;
+}
+
+static void set_auth(CURL *curl, const char *user, const char *pass) {
+    static char userpwd[256];
+    snprintf(userpwd, sizeof(userpwd), "%s:%s",
+             user ? user : "", pass ? pass : "");
+    curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_DIGEST);
+    curl_easy_setopt(curl, CURLOPT_USERPWD,  userpwd);
+}
+
+long vapix_port_set(int port, int activate, const char *user, const char *pass) {
+    char url[256];
+    snprintf(url, sizeof(url),
+        "http://localhost/axis-cgi/io/virtualport.cgi"
+        "?schemaversion=1&action=%d&port=%d",
+        activate ? 11 : 10, port);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return 0;
+    set_auth(curl, user, pass);
+    curl_easy_setopt(curl, CURLOPT_URL,     url);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_NOBODY,  1L);
+
+    CURLcode rc = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(curl);
+
+    if (rc != CURLE_OK) {
+        syslog(LOG_WARNING, "vapix: port %d %s curl err: %s",
+               port, activate ? "set" : "clear", curl_easy_strerror(rc));
+        return 0;
+    }
+    return http_code;
+}
+
+char *vapix_get(const char *path, const char *user, const char *pass,
+                long *http_code_out) {
+    char url[384];
+    snprintf(url, sizeof(url), "http://localhost%s", path);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    Buf buf = { NULL, 0 };
+    set_auth(curl, user, pass);
+    curl_easy_setopt(curl, CURLOPT_URL,           url);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       10L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &buf);
+
+    CURLcode rc = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(curl);
+
+    if (http_code_out) *http_code_out = http_code;
+    if (rc != CURLE_OK) {
+        free(buf.data);
+        return NULL;
+    }
+    return buf.data;  /* caller frees; may be NULL */
+}
+
+int vapix_probe_virtual_ports(const char *user, const char *pass, int *max_ports) {
+    /* Ask for the Input group of properties — the number of available
+     * virtual input ports is exposed there on modern AXIS OS.
+     * We fall back to a conservative default (32) on older firmware. */
+    long code = 0;
+    char *body = vapix_get(
+        "/axis-cgi/param.cgi?action=list&group=Properties.VirtualInput",
+        user, pass, &code);
+
+    int n = 0;
+
+    if (body && code == 200) {
+        /* Look for "Properties.VirtualInput.NumberOfPorts=N" */
+        const char *k = strstr(body, "NumberOfPorts=");
+        if (k) {
+            k += strlen("NumberOfPorts=");
+            n = atoi(k);
+        }
+    }
+    free(body);
+
+    if (n <= 0) n = 32;                 /* conservative default */
+    if (n > 64) n = 64;                 /* platform hard cap */
+    if (max_ports) *max_ports = n;
+    return 1;
+}
+
+int vapix_has_video(const char *user, const char *pass) {
+    long code = 0;
+    char *body = vapix_get(
+        "/axis-cgi/param.cgi?action=list&group=Properties.Image",
+        user, pass, &code);
+    int yes = (code == 200 && body && strstr(body, "Properties.Image")) ? 1 : 0;
+    free(body);
+    return yes;
+}
+
+char *vapix_device_info(const char *user, const char *pass) {
+    long code = 0;
+    char *body = vapix_get(
+        "/axis-cgi/param.cgi?action=list&group=Brand,Properties.System",
+        user, pass, &code);
+    if (code == 200) return body;
+    free(body);
+    return NULL;
+}

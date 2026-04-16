@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.3.1",
+  "acapPackageConf": {
+    "setup": {
+      "appName": "weather_acap",
+      "vendor": "Custom",
+      "vendorUrl": "https://example.com",
+      "version": "1.0.4",
+      "apiVersion": "1.0.0",
+      "architecture": "aarch64",
+      "appType": "containerized",
+      "runOptions": "--network host"
+    }
+  }
+}
