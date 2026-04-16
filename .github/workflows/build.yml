@@ -35,8 +35,9 @@ jobs:
             VER="${GITHUB_REF_NAME}"
             ACAP_VER="${VER#v}"
           else
+            # Use the version from manifest.json for dev builds
+            ACAP_VER=$(jq -r '.acapPackageConf.setup.version' app/manifest.json)
             VER="dev-${GITHUB_SHA::8}"
-            ACAP_VER="0.0.0"
           fi
           echo "version=${VER}"           >> "$GITHUB_OUTPUT"
           echo "acap_version=${ACAP_VER}" >> "$GITHUB_OUTPUT"
