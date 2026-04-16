@@ -1,50 +1,32 @@
-name: Tests
+name: Build Check
 
-# Run on every push and pull request to any branch.
-# This is the fast feedback loop — no Docker build, just Python + pytest.
+# Fast feedback on every push/PR — verify the native code compiles.
 on:
   push:
   pull_request:
 
 jobs:
-  test:
-    name: pytest (Python ${{ matrix.python-version }})
+  build-check:
+    name: Compile check (${{ matrix.arch }})
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        arch: [aarch64, armv7hf]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install application dependencies
-        run: pip install -r app/requirements.txt
-
-      - name: Install test dependencies
-        run: pip install -r tests/requirements-test.txt
-
-      - name: Run pytest with coverage
+      - name: Cross-compile with ACAP Native SDK
         run: |
-          pytest tests/ \
-            -v \
-            --tb=short \
-            --cov=app \
-            --cov-report=xml:coverage.xml \
-            --cov-report=term-missing
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-py${{ matrix.python-version }}
-          path: coverage.xml
-          retention-days: 14
+          docker run --rm \
+            -v "${{ github.workspace }}/app:/opt/app" \
+            axisecp/acap-native-sdk:1.14-${{ matrix.arch }}-ubuntu22.04 \
+            sh -c '. /opt/axis/acapsdk/environment-setup-* \
+                   && cd /opt/app \
+                   && make clean \
+                   && make -j$(nproc) \
+                   && echo "Build OK: weather_acap + config_cgi" \
+                   && file weather_acap html/config_cgi'

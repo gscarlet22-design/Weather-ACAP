@@ -10,6 +10,7 @@ pkg_check_modules(CURL    REQUIRED libcurl)
 set(UTIL_SRCS
     cJSON.c
     params.c
+    vapix.c
 )
 
 # ── Main daemon ───────────────────────────────────────────────────────────────
@@ -20,6 +21,8 @@ add_executable(weather_acap
     weather_api.c
     alerts.c
     overlay.c
+    history.c
+    webhook.c
     weather_acap.c
 )
 
@@ -44,6 +47,12 @@ target_compile_options(weather_acap PRIVATE
 # ── Config CGI binary (web UI backend) ───────────────────────────────────────
 add_executable(config_cgi
     ${UTIL_SRCS}
+    nws.c
+    openmeteo.c
+    weather_api.c
+    alerts.c
+    overlay.c
+    webhook.c
     config_cgi.c
 )
 
@@ -51,19 +60,22 @@ target_include_directories(config_cgi PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${GLIB_INCLUDE_DIRS}
     ${AXPARAM_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
 )
 
 target_link_libraries(config_cgi PRIVATE
     ${GLIB_LIBRARIES}
     ${AXPARAM_LIBRARIES}
+    ${CURL_LIBRARIES}
+    m
 )
 
 target_compile_options(config_cgi PRIVATE
-    -Wall -Wextra -Wno-unused-parameter
+    -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
 )
 
 # ── Install rules ─────────────────────────────────────────────────────────────
 # acap-build reads the install staging directory to build the .eap
 install(TARGETS weather_acap DESTINATION .)
 install(TARGETS config_cgi   DESTINATION html)
-install(FILES   html/index.html DESTINATION html)
+install(FILES   html/index.html html/style.css html/app.js DESTINATION html)

@@ -14,7 +14,7 @@
     "configuration": {
       "httpConfig": [
         {
-          "name": "weather_acap",
+          "name": "config_cgi",
           "access": "admin",
           "type": "transferCgi"
         }
