@@ -1,57 +1,17 @@
-# ── Python ────────────────────────────────────────────────────────────────────
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.Python
-*.egg
-*.egg-info/
-dist/
-build/
-eggs/
-parts/
-var/
-sdist/
-develop-eggs/
-.installed.cfg
-lib/
-lib64/
-
-# ── Virtual environments ───────────────────────────────────────────────────────
-.env
-.venv
-env/
-venv/
-ENV/
-
-# ── Test / coverage ───────────────────────────────────────────────────────────
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
-*.cover
-.hypothesis/
-
 # ── ACAP build artifacts ───────────────────────────────────────────────────────
 *.eap
 *.eap4
-image.tar
-*.tar
-*.tar.gz
-
-# ── Runtime config (contains user credentials / ZIP — never commit) ───────────
-app/config_store.json
+*.o
+dist/
+build/
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
+.env
 .env.local
 .env.*.local
 secrets.json
 *.pem
 *.key
-
-# ── Docker ────────────────────────────────────────────────────────────────────
-docker-compose.override.yml
 
 # ── IDEs ─────────────────────────────────────────────────────────────────────
 .idea/

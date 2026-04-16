@@ -7,7 +7,7 @@
   "use strict";
 
   /* ── Constants ──────────────────────────────────────────────────────────── */
-  var CGI = "weather_acap";
+  var CGI = "weather_acap.cgi";
   var POLL_MS = 5000;
   var TOAST_MS = 4000;
 
@@ -28,7 +28,22 @@
       if (opts.json)
         init.headers = { "Content-Type": "application/json" };
     }
-    return fetch(url, init).then(function (r) { return r.json(); });
+    return fetch(url, init).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (body) {
+          var preview = body.substring(0, 80).replace(/</g, "&lt;");
+          throw new Error("HTTP " + r.status + " from " + url + " — " + preview);
+        });
+      }
+      var ct = r.headers.get("content-type") || "";
+      if (ct.indexOf("json") < 0) {
+        return r.text().then(function (body) {
+          var preview = body.substring(0, 80).replace(/</g, "&lt;");
+          throw new Error("Expected JSON but got " + ct + " from " + url + " — " + preview);
+        });
+      }
+      return r.json();
+    });
   }
 
   function encField(key, val) {

@@ -57,7 +57,7 @@ add_executable(weather_acap_cgi
     webhook.c
     config_cgi.c
 )
-set_target_properties(weather_acap_cgi PROPERTIES OUTPUT_NAME weather_acap)
+set_target_properties(weather_acap_cgi PROPERTIES OUTPUT_NAME weather_acap.cgi)
 
 target_include_directories(weather_acap_cgi PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

@@ -190,7 +190,7 @@ If you have SSH access to the camera, these curl commands can help debug:
 
 ```bash
 # Check current status (written by the daemon every poll cycle):
-cat /tmp/weather_acap_status.json | python3 -m json.tool
+cat /tmp/weather_acap_status.json
 
 # Check heartbeat (Unix timestamp of last successful poll):
 cat /tmp/weather_acap_heartbeat
