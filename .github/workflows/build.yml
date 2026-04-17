@@ -56,6 +56,12 @@ jobs:
           cat app/manifest.json
 
       # The ACAP Native SDK image ships its own cross-toolchain — no QEMU needed.
+      # `-a weather_acap.cgi` tells acap-build to include the CGI binary at the
+      # package root.  acap-build does NOT auto-include extra executables from
+      # the package root even when declared in manifest.json httpConfig — only
+      # the appName binary, html/, manifest.json, param.conf, and LICENSE are
+      # picked up by default.  Without -a, the CGI binary is silently omitted
+      # from the .eap and Apache returns HTTP 500.
       - name: Build with ACAP Native SDK
         run: |
           docker run --rm \
@@ -63,7 +69,7 @@ jobs:
             axisecp/acap-native-sdk:1.14-${{ matrix.arch }}-ubuntu22.04 \
             sh -c '. /opt/axis/acapsdk/environment-setup-* \
                    && cd /opt/app \
-                   && acap-build .'
+                   && acap-build . -a weather_acap.cgi'
 
       - name: Rename and report .eap
         run: |
