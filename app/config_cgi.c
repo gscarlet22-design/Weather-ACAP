@@ -28,6 +28,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <syslog.h>
 
 #define CONFIG_FILE    "/tmp/weather_acap_config.json"
 #define SAVE_FILE      "/tmp/weather_acap_save.json"
@@ -622,6 +623,18 @@ static const char *query_action(const char *qs) {
 }
 
 int main(void) {
+    /* DIAGNOSTIC: log invocation at the very first line so we can confirm
+     * Apache actually exec'd us (vs. rejecting before exec).  If this line
+     * never appears in syslog after a UI request, the 500 is from Apache
+     * (suexec / handler config); if it does appear, the 500 is from us. */
+    openlog("weather_acap.cgi", LOG_PID, LOG_USER);
+    {
+        const char *m = getenv("REQUEST_METHOD");
+        const char *q = getenv("QUERY_STRING");
+        syslog(LOG_INFO, "invoked: method=%s query=%s uid=%d",
+               m ? m : "(null)", q ? q : "(null)", (int)getuid());
+    }
+
     /* Load config from the file the daemon writes — no axparameter needed */
     config_load();
 
@@ -663,5 +676,7 @@ int main(void) {
     }
 
     cJSON_Delete(g_config);
+    syslog(LOG_INFO, "completed action=%s", action);
+    closelog();
     return 0;
 }
