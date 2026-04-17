@@ -45,11 +45,12 @@ target_compile_options(weather_acap PRIVATE
 )
 
 # ── Config CGI binary (web UI backend) ───────────────────────────────────
-# The CGI runs under lighttpd, NOT the ACAP runtime, so it must NOT link
-# against libaxparameter, libglib, or libcurl — any missing library causes
-# the dynamic linker to fail before main() and lighttpd returns HTTP 500.
-# CGI_NO_CURL guards all curl code at compile time; only libm is needed.
-# Config exchange is file-based: daemon writes JSON, CGI reads it.
+# The CGI runs under Apache's per-ACAP suexec context, NOT the ACAP runtime,
+# so it must NOT link against libaxparameter, libglib, or libcurl — any
+# missing library at exec time causes the dynamic linker to fail before main()
+# and Apache returns HTTP 500.  CGI_NO_CURL guards all curl code at compile
+# time; only libm is needed.  Config exchange is file-based: daemon writes
+# JSON, CGI reads it.
 add_executable(weather_acap_cgi
     ${SHARED_SRCS}
     config_cgi.c
@@ -72,5 +73,7 @@ target_compile_options(weather_acap_cgi PRIVATE
 
 # ── Install rules ────────────────────────────────────────────────────────
 install(TARGETS weather_acap     DESTINATION .)
-install(TARGETS weather_acap_cgi DESTINATION html)
+# CGI binary at package root (NOT html/) — Apache's CGI handler resolves
+# /local/weather_acap/weather_acap.cgi to <package_root>/weather_acap.cgi.
+install(TARGETS weather_acap_cgi DESTINATION .)
 install(FILES   html/index.html html/style.css html/app.js DESTINATION html)

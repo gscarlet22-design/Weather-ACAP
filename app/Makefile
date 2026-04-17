@@ -3,18 +3,27 @@
 #
 # The SDK environment-setup-* script sets CC, CFLAGS, LDFLAGS, PKG_CONFIG_PATH.
 # acap-build calls 'make', then packages:
-#   - the binary named <appName> (weather_acap)
-#   - the html/ directory (static files + compiled CGI binary)
+#   - the binary named <appName> (weather_acap)         → package root
+#   - the binary declared by manifest httpConfig.name   → package root
+#   - the html/ directory (static UI assets only)       → html/
 # ─────────────────────────────────────────────────────────────────────────────
 
 MAIN_PROG = weather_acap
-CGI_PROG  = html/weather_acap.cgi  # .cgi extension required by camera's lighttpd
+# CGI binary MUST live at the package root — not in html/.
+# Apache's per-ACAP CGI handler (declared via manifest httpConfig + auto-generated
+# cgi.conf line "administrator /weather_acap.cgi") maps the URL
+#   /local/weather_acap/weather_acap.cgi
+# to the file
+#   /usr/local/packages/weather_acap/weather_acap.cgi   (package root)
+# NOT to /usr/local/packages/weather_acap/html/weather_acap.cgi.
+# Putting the binary in html/ makes Apache's handler fail before exec → HTTP 500
+# with no syslog entry from the CGI itself.  html/ is for static assets only.
+CGI_PROG  = weather_acap.cgi
 
 # Daemon uses all three libraries.
 # CGI has NO libcurl dependency — CGI_NO_CURL guards all curl code at compile
-# time so the binary has no dynamic dependency on libcurl.  This prevents the
-# HTTP 500 caused by the dynamic linker failing to find libcurl in lighttpd's
-# execution context even when it is present in the ACAP runtime's environment.
+# time so the binary has no dynamic dependency on libcurl.  This keeps the CGI
+# binary minimal under Apache's per-ACAP suexec context.
 DAEMON_PKGS = glib-2.0 axparameter libcurl
 
 CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
@@ -54,11 +63,8 @@ cgi_config_cgi.o: config_cgi.c
 cgi_%.o: %.c
 	$(CC) $(CFLAGS) $(CGI_CFLAGS) -c -o $@ $<
 
-$(CGI_PROG): cgi_config_cgi.o $(CGI_SHARED_OBJS) | html
+$(CGI_PROG): cgi_config_cgi.o $(CGI_SHARED_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(CGI_LDLIBS)
-
-html:
-	mkdir -p html
 
 clean:
 	$(RM) *.o cgi_*.o $(MAIN_PROG) $(CGI_PROG)
