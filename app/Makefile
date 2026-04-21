@@ -15,10 +15,7 @@ MAIN_PROG = weather_acap
 # Previous transferCgi path is deprecated in AXIS OS 12+ and silently 500s.
 CGI_PROG  = weather_acap.cgi
 
-# Daemon uses all three libraries.
-# CGI has NO libcurl dependency — CGI_NO_CURL guards all curl code at compile
-# time so the binary has no dynamic dependency on libcurl.  This keeps the CGI
-# binary minimal under Apache's per-ACAP suexec context.
+# Daemon uses glib (main loop), axparameter (persistent config), libcurl (HTTP).
 DAEMON_PKGS = glib-2.0 axparameter libcurl
 
 CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
@@ -26,11 +23,13 @@ CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
 DAEMON_CFLAGS = $(shell pkg-config --cflags $(DAEMON_PKGS))
 DAEMON_LDLIBS = $(shell pkg-config --libs $(DAEMON_PKGS)) -lm
 
-# CGI links libfcgi for the FastCGI protocol, and libm for overlay math.
-# It does NOT link libcurl — all curl code is guarded by -DCGI_NO_CURL so
-# the binary stays minimal in Apache's per-ACAP sandbox context.
-CGI_PKGS      = fcgi
-CGI_CFLAGS    = -DCGI_NO_CURL $(shell pkg-config --cflags $(CGI_PKGS))
+# CGI links libfcgi for FastCGI, libcurl for in-process VAPIX/weather/webhook
+# test endpoints, and libm for overlay math.  (libcurl was previously stripped
+# under CGI_NO_CURL while debugging HTTP 500s — that turned out to be the
+# deprecated transferCgi type, unrelated to libcurl.  With fastCgi working,
+# libcurl is safe and required for the Diagnostics tab.)
+CGI_PKGS      = fcgi libcurl
+CGI_CFLAGS    = $(shell pkg-config --cflags $(CGI_PKGS))
 CGI_LDLIBS    = $(shell pkg-config --libs $(CGI_PKGS)) -lm
 
 # Main daemon sources
