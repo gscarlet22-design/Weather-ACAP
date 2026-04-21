@@ -5,6 +5,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLIB    REQUIRED glib-2.0)
 pkg_check_modules(AXPARAM REQUIRED axparameter)
 pkg_check_modules(CURL    REQUIRED libcurl)
+pkg_check_modules(FCGI    REQUIRED fcgi)
 
 # ── Shared utility sources (used by both daemon and CGI) ─────────────────
 set(SHARED_SRCS
@@ -59,9 +60,11 @@ set_target_properties(weather_acap_cgi PROPERTIES OUTPUT_NAME weather_acap.cgi)
 
 target_include_directories(weather_acap_cgi PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${FCGI_INCLUDE_DIRS}
 )
 
 target_link_libraries(weather_acap_cgi PRIVATE
+    ${FCGI_LIBRARIES}
     m
 )
 

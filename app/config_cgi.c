@@ -1,11 +1,14 @@
 /*
- * config_cgi — Web UI backend for Weather ACAP
+ * config_cgi — FastCGI Web UI backend for Weather ACAP
  *
- * This CGI runs under lighttpd (not the ACAP runtime), so it deliberately
- * avoids libaxparameter and libglib — those libraries may crash in the
- * CGI process context.  Instead, config is exchanged via JSON files:
+ * This is a long-running FastCGI daemon spawned by the ACAP runtime under
+ * Apache.  Apache forwards /local/weather_acap/weather_acap.cgi?... requests
+ * over a Unix socket whose path is passed via the FCGI_SOCKET_NAME env var.
  *
- *   /tmp/weather_acap_config.json   ← written by the daemon, read by CGI
+ * It deliberately avoids libaxparameter and libglib — config is exchanged
+ * with the main daemon via JSON files on /tmp:
+ *
+ *   /tmp/weather_acap_config.json   ← written by daemon, read by CGI
  *   /tmp/weather_acap_save.json     ← written by CGI, read by daemon
  *   /tmp/weather_acap_status.json   ← written by daemon (poll snapshot)
  *   /tmp/weather_acap_heartbeat     ← written by daemon
@@ -14,7 +17,11 @@
  * After writing a save file the CGI sends SIGUSR1 to the daemon (PID read
  * from /tmp/weather_acap.pid) so it picks up changes immediately.
  *
- * Routed by ?action= query parameter. Each endpoint returns application/json.
+ * Routed by ?action= query parameter.  Each endpoint returns application/json.
+ *
+ * Previous incarnation used manifest httpConfig "transferCgi" — that path is
+ * deprecated in AXIS OS 12.x and silently returns HTTP 500 before exec.
+ * AXIS-shipped web-server-using-fastcgi example is the working reference.
  */
 #include "cJSON.h"
 #include "vapix.h"
@@ -23,10 +30,14 @@
 #include "overlay.h"
 #include "webhook.h"
 
+#include <fcgiapp.h>
+
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <syslog.h>
 
@@ -36,6 +47,29 @@
 #define STATUS_FILE    "/tmp/weather_acap_status.json"
 #define HEARTBEAT_FILE "/tmp/weather_acap_heartbeat"
 #define HISTORY_FILE   "/tmp/weather_acap_history.jsonl"
+
+/* Current FastCGI request — set by the accept loop, used by every output
+ * helper below.  Not thread-safe by design: the FastCGI accept loop is
+ * single-threaded. */
+static FCGX_Request g_req;
+
+/* ── Output wrappers ────────────────────────────────────────────────────── */
+
+static void out_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void out_printf(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    FCGX_VFPrintF(g_req.out, fmt, ap);
+    va_end(ap);
+}
+
+static void out_putc(int c) {
+    FCGX_PutChar(c, g_req.out);
+}
+
+static void out_puts(const char *s) {
+    if (s) FCGX_PutS(s, g_req.out);
+}
 
 /* ── Config field table ────────────────────────────────────────────────────
  * Maps axparameter names ↔ form field names.  Used by config / save / export.
@@ -122,14 +156,27 @@ static void free_kv(KV *kv, int n) {
 /* ── Output helpers ─────────────────────────────────────────────────────── */
 
 static void json_header(void) {
-    printf("Content-Type: application/json\r\nCache-Control: no-cache\r\n\r\n");
+    out_puts("Content-Type: application/json\r\nCache-Control: no-cache\r\n\r\n");
 }
 
 static void err_json(const char *msg) {
     json_header();
-    printf("{\"ok\":false,\"error\":\"%s\"}\n", msg ? msg : "");
+    out_printf("{\"ok\":false,\"error\":\"%s\"}\n", msg ? msg : "");
 }
 
+/* JSON-escape a string and write to the current FastCGI response stream. */
+static void json_esc_out(const char *in) {
+    if (!in) in = "";
+    for (size_t i = 0; in[i]; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (c == '"' || c == '\\') { out_putc('\\'); out_putc(c); }
+        else if (c < 0x20) { continue; }
+        else out_putc(c);
+    }
+}
+
+/* JSON-escape a string and write to a regular FILE* (used for save/export
+ * files that are written to disk, not returned to the client). */
 static void json_esc_to(FILE *f, const char *in) {
     if (!in) in = "";
     for (size_t i = 0; in[i]; i++) {
@@ -174,9 +221,10 @@ static char *read_file_tail(const char *path, int max_lines) {
 /* ── File-based config access ─────────────────────────────────────────── */
 /* Replaces axparameter: daemon writes CONFIG_FILE, CGI reads it.          */
 
-static cJSON *g_config = NULL;   /* loaded once in main() */
+static cJSON *g_config = NULL;   /* reloaded at the top of each request */
 
 static void config_load(void) {
+    if (g_config) { cJSON_Delete(g_config); g_config = NULL; }
     char *raw = read_file(CONFIG_FILE);
     if (raw) {
         g_config = cJSON_Parse(raw);
@@ -259,20 +307,20 @@ static int write_save_file(const char *overrides[][2], int count) {
 
 static void endpoint_config(void) {
     json_header();
-    printf("{\n");
+    out_puts("{\n");
     for (int i = 0; FIELDS[i].param; i++) {
         char *v = cfg_get(FIELDS[i].param);
         int is_secret = (strcmp(FIELDS[i].param, "VapixPass") == 0);
-        printf("  \"%s\": \"", FIELDS[i].form);
+        out_printf("  \"%s\": \"", FIELDS[i].form);
         if (is_secret) {
-            if (v && *v) printf("__SET__");
+            if (v && *v) out_puts("__SET__");
         } else {
-            json_esc_to(stdout, v);
+            json_esc_out(v);
         }
-        printf("\"%s\n", FIELDS[i + 1].param ? "," : "");
+        out_printf("\"%s\n", FIELDS[i + 1].param ? "," : "");
         free(v);
     }
-    printf("}\n");
+    out_puts("}\n");
 }
 
 static void endpoint_status(void) {
@@ -280,8 +328,8 @@ static void endpoint_status(void) {
     char *status = read_file(STATUS_FILE);
     char *hb     = read_file(HEARTBEAT_FILE);
     long  hb_ts  = hb ? atol(hb) : 0;
-    printf("{\n  \"snapshot\": %s,\n  \"last_heartbeat\": %ld\n}\n",
-           status ? status : "{}", hb_ts);
+    out_printf("{\n  \"snapshot\": %s,\n  \"last_heartbeat\": %ld\n}\n",
+               status ? status : "{}", hb_ts);
     free(status);
     free(hb);
 }
@@ -315,8 +363,8 @@ static void endpoint_save(const char *body) {
     free_kv(kv, n);
 
     json_header();
-    printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
-           ok ? "true" : "false", ov_count, ok ? 0 : 1);
+    out_printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
+               ok ? "true" : "false", ov_count, ok ? 0 : 1);
 }
 
 static void endpoint_ports(void) {
@@ -326,7 +374,7 @@ static void endpoint_ports(void) {
     vapix_probe_virtual_ports(u, p, &max_ports);
     free(u); free(p);
     json_header();
-    printf("{\"max_ports\":%d}\n", max_ports);
+    out_printf("{\"max_ports\":%d}\n", max_ports);
 }
 
 static void endpoint_device(void) {
@@ -334,28 +382,28 @@ static void endpoint_device(void) {
     char *p = cfg_get("VapixPass");
     char *info = vapix_device_info(u, p);
     json_header();
-    printf("{\"raw\":\"");
-    json_esc_to(stdout, info ? info : "");
-    printf("\"}\n");
+    out_puts("{\"raw\":\"");
+    json_esc_out(info ? info : "");
+    out_puts("\"}\n");
     free(info); free(u); free(p);
 }
 
 static void endpoint_history(void) {
     json_header();
     char *tail = read_file_tail(HISTORY_FILE, 50);
-    printf("{\"entries\":[");
+    out_puts("{\"entries\":[");
     if (tail && *tail) {
         int first = 1;
         char *line = strtok(tail, "\n");
         while (line) {
             if (*line) {
-                printf("%s%s", first ? "" : ",", line);
+                out_printf("%s%s", first ? "" : ",", line);
                 first = 0;
             }
             line = strtok(NULL, "\n");
         }
     }
-    printf("]}\n");
+    out_puts("]}\n");
     free(tail);
 }
 
@@ -368,9 +416,9 @@ static void endpoint_logs(void) {
         if (access(paths[i], R_OK) == 0)
             log = read_file_tail(paths[i], 60);
     }
-    printf("{\"lines\":\"");
-    json_esc_to(stdout, log ? log : "(no accessible syslog; check camera System Log via web UI)");
-    printf("\"}\n");
+    out_puts("{\"lines\":\"");
+    json_esc_out(log ? log : "(no accessible syslog; check camera System Log via web UI)");
+    out_puts("\"}\n");
     free(log);
 }
 
@@ -424,11 +472,11 @@ static void endpoint_preview_overlay(void) {
     overlay_render_text(&snap, &cfg, out, sizeof(out));
 
     json_header();
-    printf("{\"text\":\"");
-    json_esc_to(stdout, out);
-    printf("\",\"position\":\"");
-    json_esc_to(stdout, pos ? pos : "topLeft");
-    printf("\"}\n");
+    out_puts("{\"text\":\"");
+    json_esc_out(out);
+    out_puts("\",\"position\":\"");
+    json_esc_out(pos ? pos : "topLeft");
+    out_puts("\"}\n");
 
     free(pos); free(tmpl); free(atmpl);
 }
@@ -448,15 +496,15 @@ static void endpoint_test_weather(void) {
                                &snap);
 
     json_header();
-    printf("{\"ok\":%s,\"valid\":%s,\"provider\":\"",
-           ok ? "true" : "false", snap.conditions.valid ? "true" : "false");
-    json_esc_to(stdout, snap.conditions.provider);
-    printf("\",\"temp_f\":%.1f,\"description\":\"", snap.conditions.temp_f);
-    json_esc_to(stdout, snap.conditions.description);
-    printf("\",\"wind_mph\":%.1f,\"humidity_pct\":%d,\"alert_count\":%d,"
-           "\"lat\":%.6f,\"lon\":%.6f}\n",
-           snap.conditions.wind_speed_mph, snap.conditions.humidity_pct,
-           snap.alerts.count, snap.lat, snap.lon);
+    out_printf("{\"ok\":%s,\"valid\":%s,\"provider\":\"",
+               ok ? "true" : "false", snap.conditions.valid ? "true" : "false");
+    json_esc_out(snap.conditions.provider);
+    out_printf("\",\"temp_f\":%.1f,\"description\":\"", snap.conditions.temp_f);
+    json_esc_out(snap.conditions.description);
+    out_printf("\",\"wind_mph\":%.1f,\"humidity_pct\":%d,\"alert_count\":%d,"
+               "\"lat\":%.6f,\"lon\":%.6f}\n",
+               snap.conditions.wind_speed_mph, snap.conditions.humidity_pct,
+               snap.alerts.count, snap.lat, snap.lon);
 
     free(zip); free(lat); free(lon); free(prov); free(ua);
 }
@@ -470,11 +518,11 @@ static void endpoint_test_vapix(void) {
     int max_ports = 0;
     vapix_probe_virtual_ports(u, p, &max_ports);
     json_header();
-    printf("{\"http_code\":%ld,\"ok\":%s,\"has_video\":%s,\"max_ports\":%d,\"brand_raw\":\"",
-           code, (code == 200) ? "true" : "false",
-           has_video ? "true" : "false", max_ports);
-    json_esc_to(stdout, body ? body : "");
-    printf("\"}\n");
+    out_printf("{\"http_code\":%ld,\"ok\":%s,\"has_video\":%s,\"max_ports\":%d,\"brand_raw\":\"",
+               code, (code == 200) ? "true" : "false",
+               has_video ? "true" : "false", max_ports);
+    json_esc_out(body ? body : "");
+    out_puts("\"}\n");
     free(body); free(u); free(p);
 }
 
@@ -496,8 +544,8 @@ static void endpoint_fire_port(const char *qs, int activate) {
     long code = vapix_port_set(port, activate, u, p);
     free(u); free(p);
     json_header();
-    printf("{\"ok\":%s,\"port\":%d,\"activated\":%s,\"http_code\":%ld}\n",
-           (code == 200) ? "true" : "false", port, activate ? "true" : "false", code);
+    out_printf("{\"ok\":%s,\"port\":%d,\"activated\":%s,\"http_code\":%ld}\n",
+               (code == 200) ? "true" : "false", port, activate ? "true" : "false", code);
 }
 
 static void endpoint_clear_all(void) {
@@ -513,7 +561,7 @@ static void endpoint_clear_all(void) {
     }
     free(u); free(p); free(mp);
     json_header();
-    printf("{\"ok\":true,\"cleared\":%d,\"total\":%d}\n", cleared, map.count);
+    out_printf("{\"ok\":true,\"cleared\":%d,\"total\":%d}\n", cleared, map.count);
 }
 
 static void endpoint_fire_drill(void) {
@@ -530,8 +578,8 @@ static void endpoint_fire_drill(void) {
     }
     free(u); free(p); free(mp);
     json_header();
-    printf("{\"ok\":true,\"fired\":%d,\"note\":\"Ports will remain active until "
-           "next weather poll clears them, or you click 'Clear all ports'.\"}\n", fired);
+    out_printf("{\"ok\":true,\"fired\":%d,\"note\":\"Ports will remain active until "
+               "next weather poll clears them, or you click 'Clear all ports'.\"}\n", fired);
 }
 
 static void endpoint_test_webhook(void) {
@@ -549,23 +597,23 @@ static void endpoint_test_webhook(void) {
     free(url);
 
     json_header();
-    printf("{\"ok\":%s,\"http_code\":%ld}\n",
-           (code >= 200 && code < 300) ? "true" : "false", code);
+    out_printf("{\"ok\":%s,\"http_code\":%ld}\n",
+               (code >= 200 && code < 300) ? "true" : "false", code);
 }
 
 static void endpoint_export(void) {
-    printf("Content-Type: application/json\r\n"
-           "Content-Disposition: attachment; filename=\"weather_acap_config.json\"\r\n\r\n");
-    printf("{\n  \"app\": \"weather_acap\",\n  \"version\": 1,\n  \"config\": {\n");
+    out_puts("Content-Type: application/json\r\n"
+             "Content-Disposition: attachment; filename=\"weather_acap_config.json\"\r\n\r\n");
+    out_puts("{\n  \"app\": \"weather_acap\",\n  \"version\": 1,\n  \"config\": {\n");
     for (int i = 0; FIELDS[i].param; i++) {
         char *v = cfg_get(FIELDS[i].param);
         int is_secret = (strcmp(FIELDS[i].param, "VapixPass") == 0);
-        printf("    \"%s\": \"", FIELDS[i].param);
-        if (!is_secret) json_esc_to(stdout, v);
-        printf("\"%s\n", FIELDS[i + 1].param ? "," : "");
+        out_printf("    \"%s\": \"", FIELDS[i].param);
+        if (!is_secret) json_esc_out(v);
+        out_printf("\"%s\n", FIELDS[i + 1].param ? "," : "");
         free(v);
     }
-    printf("  }\n}\n");
+    out_puts("  }\n}\n");
 }
 
 static void endpoint_import(const char *body) {
@@ -592,21 +640,22 @@ static void endpoint_import(const char *body) {
     cJSON_Delete(root);
 
     json_header();
-    printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
-           ok ? "true" : "false", ov_count, ok ? 0 : 1);
+    out_printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
+               ok ? "true" : "false", ov_count, ok ? 0 : 1);
 }
 
 /* ── Dispatcher ────────────────────────────────────────────────────────── */
 
+/* Read the POST body from the FastCGI input stream (not stdin). */
 static char *read_post_body(void) {
-    const char *cl_str = getenv("CONTENT_LENGTH");
+    const char *cl_str = FCGX_GetParam("CONTENT_LENGTH", g_req.envp);
     int cl = cl_str ? atoi(cl_str) : 0;
     if (cl <= 0) return strdup("");
     if (cl > 65536) cl = 65536;
     char *body = (char *)malloc(cl + 1);
     if (!body) return NULL;
-    size_t r = fread(body, 1, cl, stdin);
-    body[r] = '\0';
+    int r = FCGX_GetStr(body, cl, g_req.in);
+    body[r >= 0 ? r : 0] = '\0';
     return body;
 }
 
@@ -622,27 +671,16 @@ static const char *query_action(const char *qs) {
     return action;
 }
 
-int main(void) {
-    /* DIAGNOSTIC: log invocation at the very first line so we can confirm
-     * Apache actually exec'd us (vs. rejecting before exec).  If this line
-     * never appears in syslog after a UI request, the 500 is from Apache
-     * (suexec / handler config); if it does appear, the 500 is from us. */
-    openlog("weather_acap.cgi", LOG_PID, LOG_USER);
-    {
-        const char *m = getenv("REQUEST_METHOD");
-        const char *q = getenv("QUERY_STRING");
-        syslog(LOG_INFO, "invoked: method=%s query=%s uid=%d",
-               m ? m : "(null)", q ? q : "(null)", (int)getuid());
-    }
-
-    /* Load config from the file the daemon writes — no axparameter needed */
+static void handle_request(void) {
     config_load();
 
-    const char *method = getenv("REQUEST_METHOD");
-    const char *qs     = getenv("QUERY_STRING");
+    const char *method = FCGX_GetParam("REQUEST_METHOD", g_req.envp);
+    const char *qs     = FCGX_GetParam("QUERY_STRING",   g_req.envp);
     const char *action = query_action(qs);
-
     if (!*action) action = "config";
+
+    syslog(LOG_INFO, "invoked: method=%s action=%s",
+           method ? method : "(null)", action);
 
     int is_post = method && strcmp(method, "POST") == 0;
 
@@ -675,8 +713,53 @@ int main(void) {
         err_json("unknown action or wrong method");
     }
 
-    cJSON_Delete(g_config);
     syslog(LOG_INFO, "completed action=%s", action);
+}
+
+int main(void) {
+    openlog("weather_acap.cgi", LOG_PID, LOG_USER);
+
+    /* The ACAP runtime passes the FastCGI Unix socket path via this env
+     * var.  Apache forwards requests for our URL over that socket. */
+    const char *socket_path = getenv("FCGI_SOCKET_NAME");
+    if (!socket_path || !*socket_path) {
+        syslog(LOG_ERR, "FCGI_SOCKET_NAME not set — did the runtime launch us?");
+        closelog();
+        return 1;
+    }
+    syslog(LOG_INFO, "FastCGI starting, socket=%s uid=%d", socket_path, (int)getuid());
+
+    if (FCGX_Init() != 0) {
+        syslog(LOG_ERR, "FCGX_Init failed");
+        closelog();
+        return 1;
+    }
+
+    int sock = FCGX_OpenSocket(socket_path, 5);
+    if (sock < 0) {
+        syslog(LOG_ERR, "FCGX_OpenSocket(%s) failed", socket_path);
+        closelog();
+        return 1;
+    }
+    /* Apache connects to the socket as a different user; allow rwx to all
+     * local connections (the socket lives in the ACAP sandbox). */
+    chmod(socket_path, S_IRWXU | S_IRWXG | S_IRWXO);
+
+    if (FCGX_InitRequest(&g_req, sock, 0) != 0) {
+        syslog(LOG_ERR, "FCGX_InitRequest failed");
+        closelog();
+        return 1;
+    }
+
+    syslog(LOG_INFO, "FastCGI ready, accepting requests");
+
+    while (FCGX_Accept_r(&g_req) >= 0) {
+        handle_request();
+        FCGX_Finish_r(&g_req);
+    }
+
+    if (g_config) cJSON_Delete(g_config);
+    syslog(LOG_INFO, "FastCGI accept loop exited");
     closelog();
     return 0;
 }

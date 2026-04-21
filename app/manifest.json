@@ -17,7 +17,7 @@
         {
           "name": "weather_acap.cgi",
           "access": "admin",
-          "type": "transferCgi"
+          "type": "fastCgi"
         }
       ]
     }
