@@ -353,6 +353,63 @@ static gboolean do_poll(gpointer user_data) {
 
 /* ── Entry point ─────────────────────────────────────────────────────────── */
 
+/* ── Spawn the FastCGI child process ────────────────────────────────────────
+ * The ACAP runtime starts the appName binary (this daemon) and, for ACAPs
+ * with a fastCgi httpConfig entry, sets FCGI_SOCKET_NAME in its env pointing
+ * to the Unix socket Apache forwards requests to.  We fork+exec the CGI
+ * binary so it inherits that env var and opens the socket.  Apache's
+ * 503 Service Unavailable on /local/weather_acap/weather_acap.cgi comes
+ * from no process listening on the expected socket.
+ *
+ * We also log whether FCGI_SOCKET_NAME is present — if it is not, the runtime
+ * did not pre-wire the socket for the appName process (in which case we will
+ * need a different spawning strategy, e.g. runMode=never or merged binary).
+ */
+static pid_t g_cgi_pid = 0;
+
+static void spawn_fastcgi_child(void) {
+    const char *sock = getenv("FCGI_SOCKET_NAME");
+    syslog(LOG_INFO, "weather_acap: FCGI_SOCKET_NAME=%s",
+           sock ? sock : "(unset)");
+    if (!sock || !*sock) {
+        syslog(LOG_WARNING,
+               "weather_acap: no FCGI_SOCKET_NAME in env; web UI CGI will "
+               "not be spawned — expect HTTP 503 on /local/weather_acap/");
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        syslog(LOG_ERR, "weather_acap: fork for CGI failed: %m");
+        return;
+    }
+    if (pid == 0) {
+        /* Child: exec the CGI binary from the installed package path.
+         * The env (including FCGI_SOCKET_NAME) is inherited. */
+        const char *cgi_path = "/usr/local/packages/weather_acap/weather_acap.cgi";
+        execl(cgi_path, "weather_acap.cgi", (char *)NULL);
+        /* Only reached on failure */
+        syslog(LOG_ERR, "weather_acap: exec %s failed: %m", cgi_path);
+        _exit(1);
+    }
+    g_cgi_pid = pid;
+    syslog(LOG_INFO, "weather_acap: spawned FastCGI child pid=%d on socket=%s",
+           (int)pid, sock);
+}
+
+static void on_sigchld(int sig) {
+    (void)sig;
+    /* Reap the CGI child if it exits — we only log, not respawn for now. */
+    int status = 0;
+    pid_t pid;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        syslog(LOG_WARNING,
+               "weather_acap: CGI child pid=%d exited status=%d",
+               (int)pid, status);
+        if (pid == g_cgi_pid) g_cgi_pid = 0;
+    }
+}
+
 int main(void) {
     openlog("weather_acap", LOG_PID | LOG_CONS, LOG_USER);
     syslog(LOG_INFO, "weather_acap: starting up (native ACAP v4)");
@@ -360,6 +417,7 @@ int main(void) {
     signal(SIGTERM, on_signal);
     signal(SIGINT,  on_signal);
     signal(SIGUSR1, on_sigusr1);
+    signal(SIGCHLD, on_sigchld);
 
     GError *err = NULL;
     if (!params_init(&err)) {
@@ -374,6 +432,11 @@ int main(void) {
     /* Write PID and config file so the CGI can read them */
     write_pid_file();
     write_config_file();
+
+    /* Spawn the FastCGI child (web UI backend).  Must happen after
+     * write_pid_file / write_config_file so the CGI finds valid state
+     * on its first request. */
+    spawn_fastcgi_child();
 
     do_poll(NULL);   /* immediate first poll */
 
