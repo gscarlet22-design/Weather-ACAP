@@ -11,8 +11,13 @@ typedef struct {
     int    wind_dir_deg;        /* -1 = unknown */
     int    humidity_pct;
     char   provider[16];        /* "nws" or "openmeteo" */
+    char   sunrise[8];          /* "HH:MM" local, empty if unknown */
+    char   sunset[8];           /* "HH:MM" local, empty if unknown */
     int    valid;
 } WeatherConditions;
+
+/* Wind direction degrees → arrow glyph (8-way compass). */
+const char *weather_wind_dir_arrow(int deg);
 
 /* Full weather snapshot returned by weather_api_fetch(). */
 typedef struct {

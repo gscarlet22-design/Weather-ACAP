@@ -48,12 +48,13 @@ static const char *wmo_description(int code) {
 void openmeteo_get_observation(double lat, double lon, OMObservation *result) {
     memset(result, 0, sizeof(*result));
 #ifndef CGI_NO_CURL
-    char url[512];
+    char url[640];
     snprintf(url, sizeof(url),
         "https://api.open-meteo.com/v1/forecast"
         "?latitude=%.4f&longitude=%.4f"
         "&current=temperature_2m,relative_humidity_2m,weather_code,"
         "wind_speed_10m,wind_direction_10m"
+        "&daily=sunrise,sunset&forecast_days=1&timezone=auto"
         "&temperature_unit=fahrenheit&wind_speed_unit=mph",
         lat, lon);
 
@@ -94,6 +95,28 @@ void openmeteo_get_observation(double lat, double lon, OMObservation *result) {
 
     int code = cJSON_IsNumber(wc) ? (int)wc->valuedouble : -1;
     snprintf(result->description, sizeof(result->description), "%s", wmo_description(code));
+
+    /* Daily.sunrise[0] / Daily.sunset[0] arrive as ISO "2026-04-22T06:42".
+     * Strip date prefix and store just "HH:MM". */
+    cJSON *daily = cJSON_GetObjectItem(root, "daily");
+    if (daily) {
+        cJSON *sr_arr = cJSON_GetObjectItem(daily, "sunrise");
+        cJSON *ss_arr = cJSON_GetObjectItem(daily, "sunset");
+        cJSON *sr0 = (sr_arr && cJSON_GetArraySize(sr_arr) > 0)
+                      ? cJSON_GetArrayItem(sr_arr, 0) : NULL;
+        cJSON *ss0 = (ss_arr && cJSON_GetArraySize(ss_arr) > 0)
+                      ? cJSON_GetArrayItem(ss_arr, 0) : NULL;
+        if (cJSON_IsString(sr0) && sr0->valuestring) {
+            const char *t = strchr(sr0->valuestring, 'T');
+            snprintf(result->sunrise, sizeof(result->sunrise), "%s",
+                     t ? t + 1 : sr0->valuestring);
+        }
+        if (cJSON_IsString(ss0) && ss0->valuestring) {
+            const char *t = strchr(ss0->valuestring, 'T');
+            snprintf(result->sunset, sizeof(result->sunset), "%s",
+                     t ? t + 1 : ss0->valuestring);
+        }
+    }
 
     result->valid = 1;
     cJSON_Delete(root);

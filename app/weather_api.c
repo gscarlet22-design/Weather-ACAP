@@ -14,6 +14,15 @@ const char *weather_wind_dir_str(int deg) {
     return d[((deg + 11) % 360) / 23];
 }
 
+/* 8-way arrow.  Wind direction is "from" — arrow points the way the
+ * wind is going (N wind blows southward → ↓).  Useful in overlays
+ * where a glyph reads faster than the abbreviation. */
+const char *weather_wind_dir_arrow(int deg) {
+    if (deg < 0) return "·";
+    static const char *a[] = { "↓","↙","←","↖","↑","↗","→","↘" };
+    return a[((deg + 22) % 360) / 45];
+}
+
 /* ── coordinate resolution ───────────────────────────────────────────────── */
 
 static int resolve_coords(const char *zip,
@@ -105,7 +114,24 @@ int weather_api_fetch(const char *provider,
             snprintf(snap->conditions.description, sizeof(snap->conditions.description),
                      "%s", om.description);
             snprintf(snap->conditions.provider, sizeof(snap->conditions.provider), "openmeteo");
+            snprintf(snap->conditions.sunrise, sizeof(snap->conditions.sunrise),
+                     "%s", om.sunrise);
+            snprintf(snap->conditions.sunset, sizeof(snap->conditions.sunset),
+                     "%s", om.sunset);
             snap->conditions.valid = 1;
+        }
+    }
+
+    /* Even when NWS supplied conditions, fall back to Open-Meteo just for
+     * sun times (NWS doesn't expose them).  Cheap second call, free tier. */
+    if (snap->conditions.valid && !snap->conditions.sunrise[0]) {
+        OMObservation om;
+        openmeteo_get_observation(lat, lon, &om);
+        if (om.valid) {
+            snprintf(snap->conditions.sunrise, sizeof(snap->conditions.sunrise),
+                     "%s", om.sunrise);
+            snprintf(snap->conditions.sunset, sizeof(snap->conditions.sunset),
+                     "%s", om.sunset);
         }
     }
 

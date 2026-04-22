@@ -7,6 +7,10 @@ typedef struct {
     double wind_speed_mph;
     int    wind_dir_deg;
     int    humidity_pct;
+    /* Sun times — local "HH:MM" 24h, empty if not provided.  Open-Meteo
+     * returns ISO timestamps "2026-04-22T06:42" — we store the time part. */
+    char   sunrise[8];
+    char   sunset[8];
     int    valid;
 } OMObservation;
 

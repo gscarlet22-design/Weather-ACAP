@@ -4,6 +4,13 @@
 *.o
 dist/
 build/
+.ci-artifact/
+
+# ── Claude scratch ────────────────────────────────────────────────────────────
+.claude/
+
+# ── Runtime data (created on-camera, never in repo) ───────────────────────────
+localdata/
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 .env

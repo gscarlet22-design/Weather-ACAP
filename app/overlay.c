@@ -41,12 +41,21 @@ static const char *lookup_var(const char *key, const WeatherSnapshot *snap,
     if (strcmp(key, "dir") == 0) {
         return weather_wind_dir_str(snap->conditions.wind_dir_deg);
     }
+    if (strcmp(key, "wind_arrow") == 0 || strcmp(key, "arrow") == 0) {
+        return weather_wind_dir_arrow(snap->conditions.wind_dir_deg);
+    }
     if (strcmp(key, "hum") == 0 || strcmp(key, "humidity") == 0) {
         snprintf(scratch, 64, "%d", snap->conditions.humidity_pct);
         return scratch;
     }
     if (strcmp(key, "provider") == 0) {
         return snap->conditions.provider;
+    }
+    if (strcmp(key, "sunrise") == 0) {
+        return snap->conditions.sunrise[0] ? snap->conditions.sunrise : "--:--";
+    }
+    if (strcmp(key, "sunset") == 0) {
+        return snap->conditions.sunset[0] ? snap->conditions.sunset : "--:--";
     }
     if (strcmp(key, "lat") == 0) {
         snprintf(scratch, 64, "%.4f", snap->lat);
