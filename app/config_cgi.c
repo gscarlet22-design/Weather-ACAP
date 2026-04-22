@@ -448,9 +448,12 @@ static void endpoint_preview_overlay(void) {
          * samples with zeroes and the preview would read "0F · Wind 0 ·
          * ☀--:-- ☾--:--". */
         cJSON *valid = cond ? cJSON_GetObjectItem(cond, "valid") : NULL;
+        /* Bundled cJSON is minimal — no cJSON_IsBool, no ->valueint.
+         * cJSON_IsTrue already covers the JSON-bool-true case; fall back
+         * to cJSON_IsNumber + valuedouble for numeric 1 representations. */
         int have_real = cond && (
-               (cJSON_IsBool(valid)   && cJSON_IsTrue(valid))
-            || (cJSON_IsNumber(valid) && valid->valueint != 0));
+               cJSON_IsTrue(valid)
+            || (cJSON_IsNumber(valid) && valid->valuedouble != 0.0));
         if (have_real) {
             cJSON *t  = cJSON_GetObjectItem(cond, "temp_f");
             cJSON *d  = cJSON_GetObjectItem(cond, "description");
