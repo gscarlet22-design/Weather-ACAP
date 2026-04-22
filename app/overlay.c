@@ -1,7 +1,6 @@
 #include "overlay.h"
 #include "weather_api.h"
 #include "vapix.h"
-#include "cJSON.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -160,24 +159,50 @@ static int has_video(const char *user, const char *pass) {
     return g_has_video;
 }
 
-/* Escape a string for JSON inclusion. */
-static void json_esc(const char *in, char *out, size_t outlen) {
-    size_t j = 0;
-    if (!in) in = "";
-    for (size_t i = 0; in[i] && j + 2 < outlen; i++) {
-        unsigned char c = (unsigned char)in[i];
-        if (c == '"' || c == '\\') {
-            if (j + 3 >= outlen) break;
-            out[j++] = '\\'; out[j++] = c;
-        } else if (c < 0x20) {
-            continue;
-        } else {
-            out[j++] = c;
-        }
-    }
-    out[j] = '\0';
+/* Map UI-style position (camelCase) to the legacy dynamicoverlay.cgi's
+ * hyphenated form.  Accepts already-hyphenated values unchanged so the
+ * config can be set directly for edge cases.                              */
+static const char *map_position(const char *pos) {
+    if (!pos || !*pos)                   return "top-left";
+    if (strcmp(pos, "topLeft") == 0)     return "top-left";
+    if (strcmp(pos, "topRight") == 0)    return "top-right";
+    if (strcmp(pos, "bottomLeft") == 0)  return "bottom-left";
+    if (strcmp(pos, "bottomRight") == 0) return "bottom-right";
+    return pos;
 }
 
+/* Extract the identifier from a legacy CGI response body.  Bodies look
+ * like "Identifier=0\n" on success.  Returns 1 if an id was written. */
+static int parse_identifier(const char *resp, char *out, size_t outlen) {
+    if (!resp) return 0;
+    const char *p = strstr(resp, "Identifier=");
+    if (!p) return 0;
+    p += 11; /* strlen("Identifier=") */
+    size_t i = 0;
+    while (*p && *p != '\r' && *p != '\n' && *p != ' ' && i + 1 < outlen) {
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+/*
+ * Overlay push via the legacy VAPIX Dynamic Overlay CGI.
+ *
+ * The original code tried to PUT JSON to /vapix/overlays/text/<id> — that
+ * endpoint does not exist on any AXIS OS version and returned HTTP 404.
+ *
+ * The Dynamic Overlay CGI at /axis-cgi/dynamicoverlay/dynamicoverlay.cgi
+ * has been the stable contract for text overlays across ARTPEC-7/8/9 and
+ * CV25, AXIS OS 10/11/12.  It uses GET with query params:
+ *
+ *   action=addtext&camera=1&position=top-left&text=...   → "Identifier=N"
+ *   action=settext&identifier=N&text=...                 → "OK"
+ *   action=remove&identifier=N                           → "OK"
+ *
+ * The text field is URL-encoded via curl_easy_escape so Unicode glyphs
+ * (compass arrows, sun/moon symbols) round-trip correctly.
+ */
 void overlay_update(const WeatherSnapshot *snap,
                     const OverlayConfig *cfg,
                     const char *vapix_user,
@@ -189,59 +214,64 @@ void overlay_update(const WeatherSnapshot *snap,
     char text[300];
     overlay_render_text(snap, cfg, text, sizeof(text));
 
-    char esc[400];
-    json_esc(text, esc, sizeof(esc));
-
-    const char *pos = cfg->position && *cfg->position ? cfg->position : "topLeft";
-
-    char body[600];
-    snprintf(body, sizeof(body),
-             "{\"text\":\"%s\",\"position\":\"%s\",\"visible\":true}", esc, pos);
-
     CURL *curl = curl_easy_init();
     if (!curl) return;
+
+    /* URL-encode the overlay text.  curl_easy_escape handles Unicode
+     * (multi-byte UTF-8), spaces, braces, pipes — everything render
+     * might emit. */
+    char *enc_text = curl_easy_escape(curl, text, 0);
+    if (!enc_text) { curl_easy_cleanup(curl); return; }
+
+    const char *pos = map_position(cfg->position);
+
+    char url[1200];
+    if (g_overlay_id[0]) {
+        snprintf(url, sizeof(url),
+            "http://localhost/axis-cgi/dynamicoverlay/dynamicoverlay.cgi"
+            "?action=settext&identifier=%s&text=%s",
+            g_overlay_id, enc_text);
+    } else {
+        snprintf(url, sizeof(url),
+            "http://localhost/axis-cgi/dynamicoverlay/dynamicoverlay.cgi"
+            "?action=addtext&camera=1&position=%s&text=%s",
+            pos, enc_text);
+    }
+    curl_free(enc_text);
 
     char userpwd[256];
     snprintf(userpwd, sizeof(userpwd), "%s:%s",
              vapix_user ? vapix_user : "", vapix_pass ? vapix_pass : "");
 
     char *resp = NULL;
-    struct curl_slist *hdrs = curl_slist_append(NULL, "Content-Type: application/json");
-
+    curl_easy_setopt(curl, CURLOPT_URL,           url);
     curl_easy_setopt(curl, CURLOPT_HTTPAUTH,      CURLAUTH_DIGEST);
     curl_easy_setopt(curl, CURLOPT_USERPWD,       userpwd);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER,    hdrs);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT,       10L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &resp);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,    body);
-
-    if (g_overlay_id[0]) {
-        char url[256];
-        snprintf(url, sizeof(url), "http://localhost/vapix/overlays/text/%s", g_overlay_id);
-        curl_easy_setopt(curl, CURLOPT_URL,        url);
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
-    } else {
-        curl_easy_setopt(curl, CURLOPT_URL, "http://localhost/vapix/overlays/text");
-    }
 
     curl_easy_perform(curl);
     long code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-    curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
 
-    if ((code == 200 || code == 201) && resp && !g_overlay_id[0]) {
-        cJSON *root = cJSON_Parse(resp);
-        cJSON *id   = root ? cJSON_GetObjectItem(root, "id") : NULL;
-        if (cJSON_IsString(id))
-            snprintf(g_overlay_id, sizeof(g_overlay_id), "%s", id->valuestring);
-        else if (cJSON_IsNumber(id))
-            snprintf(g_overlay_id, sizeof(g_overlay_id), "%.0f", id->valuedouble);
-        cJSON_Delete(root);
+    if (code == 200 && resp && !g_overlay_id[0]) {
+        if (parse_identifier(resp, g_overlay_id, sizeof(g_overlay_id))) {
+            syslog(LOG_INFO, "overlay: created identifier=%s position=%s",
+                   g_overlay_id, pos);
+        } else {
+            syslog(LOG_WARNING,
+                   "overlay: addtext HTTP 200 but no Identifier in response: %.120s",
+                   resp);
+        }
+    } else if (code != 200) {
+        syslog(LOG_WARNING, "overlay: update HTTP %ld body=%.120s",
+               code, resp ? resp : "(null)");
+        /* If the stored id became stale (camera restart, overlay removed
+         * by another app), the next call will re-addtext.  Reset it. */
+        if (code == 400 || code == 404) g_overlay_id[0] = '\0';
     }
-    if (code != 200 && code != 201 && code != 204)
-        syslog(LOG_WARNING, "overlay: update HTTP %ld", code);
 
     free(resp);
 }
@@ -249,8 +279,11 @@ void overlay_update(const WeatherSnapshot *snap,
 void overlay_delete(const char *vapix_user, const char *vapix_pass) {
     if (!g_overlay_id[0]) return;
 
-    char url[256];
-    snprintf(url, sizeof(url), "http://localhost/vapix/overlays/text/%s", g_overlay_id);
+    char url[512];
+    snprintf(url, sizeof(url),
+        "http://localhost/axis-cgi/dynamicoverlay/dynamicoverlay.cgi"
+        "?action=remove&identifier=%s",
+        g_overlay_id);
 
     CURL *curl = curl_easy_init();
     if (!curl) return;
@@ -262,9 +295,7 @@ void overlay_delete(const char *vapix_user, const char *vapix_pass) {
     curl_easy_setopt(curl, CURLOPT_URL,           url);
     curl_easy_setopt(curl, CURLOPT_HTTPAUTH,      CURLAUTH_DIGEST);
     curl_easy_setopt(curl, CURLOPT_USERPWD,       userpwd);
-    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT,       5L);
-    curl_easy_setopt(curl, CURLOPT_NOBODY,        1L);
 
     curl_easy_perform(curl);
     curl_easy_cleanup(curl);

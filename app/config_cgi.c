@@ -442,19 +442,36 @@ static void endpoint_preview_overlay(void) {
     if (snap_raw) {
         cJSON *root = cJSON_Parse(snap_raw);
         cJSON *cond = root ? cJSON_GetObjectItem(root, "conditions") : NULL;
-        if (cond) {
+        /* Only override the built-in samples when the daemon has real data.
+         * Otherwise an empty/zeroed STATUS_FILE (e.g. first 5 min after
+         * install, before the first successful poll) would override the
+         * samples with zeroes and the preview would read "0F · Wind 0 ·
+         * ☀--:-- ☾--:--". */
+        cJSON *valid = cond ? cJSON_GetObjectItem(cond, "valid") : NULL;
+        int have_real = cond && (
+               (cJSON_IsBool(valid)   && cJSON_IsTrue(valid))
+            || (cJSON_IsNumber(valid) && valid->valueint != 0));
+        if (have_real) {
             cJSON *t  = cJSON_GetObjectItem(cond, "temp_f");
             cJSON *d  = cJSON_GetObjectItem(cond, "description");
             cJSON *w  = cJSON_GetObjectItem(cond, "wind_speed_mph");
             cJSON *wd = cJSON_GetObjectItem(cond, "wind_dir_deg");
             cJSON *h  = cJSON_GetObjectItem(cond, "humidity_pct");
+            cJSON *sr = cJSON_GetObjectItem(cond, "sunrise");
+            cJSON *ss = cJSON_GetObjectItem(cond, "sunset");
             if (cJSON_IsNumber(t))  snap.conditions.temp_f = t->valuedouble;
-            if (cJSON_IsString(d))
+            if (cJSON_IsString(d) && d->valuestring && *d->valuestring)
                 snprintf(snap.conditions.description, sizeof(snap.conditions.description),
                          "%s", d->valuestring);
             if (cJSON_IsNumber(w))  snap.conditions.wind_speed_mph = w->valuedouble;
             if (cJSON_IsNumber(wd)) snap.conditions.wind_dir_deg = (int)wd->valuedouble;
             if (cJSON_IsNumber(h))  snap.conditions.humidity_pct = (int)h->valuedouble;
+            if (cJSON_IsString(sr) && sr->valuestring)
+                snprintf(snap.conditions.sunrise, sizeof(snap.conditions.sunrise),
+                         "%s", sr->valuestring);
+            if (cJSON_IsString(ss) && ss->valuestring)
+                snprintf(snap.conditions.sunset, sizeof(snap.conditions.sunset),
+                         "%s", ss->valuestring);
         }
         cJSON_Delete(root);
     }
