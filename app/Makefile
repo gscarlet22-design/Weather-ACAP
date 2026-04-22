@@ -15,8 +15,11 @@ MAIN_PROG = weather_acap
 # Previous transferCgi path is deprecated in AXIS OS 12+ and silently 500s.
 CGI_PROG  = weather_acap.cgi
 
-# Daemon uses glib (main loop), axparameter (persistent config), libcurl (HTTP).
-DAEMON_PKGS = glib-2.0 axparameter libcurl
+# Daemon uses glib (main loop) and libcurl (HTTP).
+# axparameter was removed in commit after 593bcc2 — the AXIS OS 12 ACAP
+# sandbox rejects ax_parameter_set() with an opaque "Failed to set
+# parameter X" error.  Storage is now a JSON file in localdata/.
+DAEMON_PKGS = glib-2.0 libcurl
 
 CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
 

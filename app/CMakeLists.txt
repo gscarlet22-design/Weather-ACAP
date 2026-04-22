@@ -3,9 +3,10 @@ project(weather_acap C)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLIB    REQUIRED glib-2.0)
-pkg_check_modules(AXPARAM REQUIRED axparameter)
 pkg_check_modules(CURL    REQUIRED libcurl)
 pkg_check_modules(FCGI    REQUIRED fcgi)
+# axparameter intentionally not required — daemon uses file-based storage
+# (localdata/params.json) since AXIS OS 12 sandbox rejects ax_parameter_set.
 
 # ── Shared utility sources (used by both daemon and CGI) ─────────────────
 set(SHARED_SRCS
@@ -30,13 +31,11 @@ add_executable(weather_acap
 target_include_directories(weather_acap PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${GLIB_INCLUDE_DIRS}
-    ${AXPARAM_INCLUDE_DIRS}
     ${CURL_INCLUDE_DIRS}
 )
 
 target_link_libraries(weather_acap PRIVATE
     ${GLIB_LIBRARIES}
-    ${AXPARAM_LIBRARIES}
     ${CURL_LIBRARIES}
     m
 )
