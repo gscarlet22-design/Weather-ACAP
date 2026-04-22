@@ -224,6 +224,21 @@ static void apply_save_file(void) {
     syslog(LOG_INFO, "weather_acap: applied save file from CGI");
 }
 
+/* Short-interval callback that processes the SIGUSR1 reload flag.
+ * The poll tick also honors the flag (see do_poll), but only every
+ * PollInterval seconds — too slow for an interactive UI, which would
+ * otherwise see stale values on its next GET /config.  This runs every
+ * second and is cheap: it's a flag check followed by an early return
+ * when nothing changed. */
+static gboolean check_reload_cb(gpointer user_data) {
+    (void)user_data;
+    if (g_reload_flag) {
+        g_reload_flag = 0;
+        apply_save_file();
+    }
+    return G_SOURCE_CONTINUE;
+}
+
 /* ── Poll callback ───────────────────────────────────────────────────────── */
 
 static gboolean do_poll(gpointer user_data) {
@@ -446,6 +461,9 @@ int main(void) {
 
     g_loop     = g_main_loop_new(NULL, FALSE);
     g_timer_id = g_timeout_add_seconds((guint)interval, do_poll, NULL);
+    /* Fast path for CGI-triggered config reloads (SIGUSR1).  Without this,
+     * Save would not appear to persist until the next poll, up to 5 min. */
+    g_timeout_add(1000, check_reload_cb, NULL);
 
     g_main_loop_run(g_loop);
 
