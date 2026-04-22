@@ -209,11 +209,22 @@ static void apply_save_file(void) {
     free(raw);
     if (!root) return;
 
+    int attempted = 0, succeeded = 0;
     for (int i = 0; CONFIG_PARAMS[i]; i++) {
         cJSON *v = cJSON_GetObjectItem(root, CONFIG_PARAMS[i]);
         if (cJSON_IsString(v)) {
+            attempted++;
             GError *e = NULL;
-            params_set(CONFIG_PARAMS[i], v->valuestring, &e);
+            gboolean ok = params_set(CONFIG_PARAMS[i], v->valuestring, &e);
+            if (ok) {
+                succeeded++;
+            } else {
+                syslog(LOG_WARNING,
+                       "weather_acap: params_set(%s=\"%s\") FAILED: %s",
+                       CONFIG_PARAMS[i],
+                       v->valuestring ? v->valuestring : "",
+                       (e && e->message) ? e->message : "(no error message)");
+            }
             if (e) g_error_free(e);
         }
     }
@@ -221,7 +232,9 @@ static void apply_save_file(void) {
 
     /* Re-export so CGI sees updated values */
     write_config_file();
-    syslog(LOG_INFO, "weather_acap: applied save file from CGI");
+    syslog(LOG_INFO,
+           "weather_acap: applied save file from CGI (%d/%d keys stored)",
+           succeeded, attempted);
 }
 
 /* Short-interval callback that processes the SIGUSR1 reload flag.

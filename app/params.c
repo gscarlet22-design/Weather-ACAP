@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 
 #define APP_NAME "weather_acap"
 
@@ -136,11 +137,25 @@ char *params_get(const char *name) {
 
 gboolean params_set(const char *name, const char *value, GError **error) {
     if (!g_axparam) {
+        syslog(LOG_WARNING, "params_set(%s): axparameter handle is NULL", name);
         if (error)
             *error = g_error_new(G_FILE_ERROR, G_FILE_ERROR_FAILED, "axparameter not initialized");
         return FALSE;
     }
-    return ax_parameter_set(g_axparam, name, value, TRUE, error);
+    GError *local = NULL;
+    gboolean ok = ax_parameter_set(g_axparam, name, value, TRUE, &local);
+    if (!ok) {
+        syslog(LOG_WARNING,
+               "params_set(%s=\"%s\"): ax_parameter_set FAILED: %s",
+               name, value ? value : "",
+               (local && local->message) ? local->message : "(no error message)");
+    }
+    if (error) {
+        *error = local;            /* hand ownership to caller */
+    } else if (local) {
+        g_error_free(local);
+    }
+    return ok;
 }
 
 int params_get_int(const char *name, int default_val) {
