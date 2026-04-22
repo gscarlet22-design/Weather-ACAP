@@ -3,16 +3,17 @@
  *
  * Originally backed by libaxparameter, but on AXIS OS 12 the parameter
  * daemon rejects ax_parameter_set() from sandboxed ACAPs with an opaque
- * "Failed to set parameter X" error (see syslog evidence in commit
- * 593bcc2 — every set in a fresh install returns the same message).
+ * "Failed to set parameter X" error (see commit 593bcc2 syslog evidence
+ * — every set in a fresh install returned the same message).
  *
  * Replaced with a plain JSON file in the package's localdata directory,
- * which the per-app sandbox user owns and can read/write.  Public API
- * (params_init, params_get, params_set, params_get_int) unchanged.
+ * which the per-app sandbox user owns and can read/write.  The bundled
+ * cJSON is parse-only (no Create/Add/Print), so we keep an in-memory
+ * key→value array for the store and serialise it manually.
  *
  * Concurrency: only the daemon process calls these functions.  The CGI
  * uses its own file-based config channel (see config_cgi.c).  No locking
- * needed within the daemon — its main loop is single-threaded.
+ * needed — daemon main loop is single-threaded.
  */
 
 #include "params.h"
@@ -32,10 +33,6 @@
 #define PARAMS_DIR  "/usr/local/packages/weather_acap/localdata"
 #define PARAMS_FILE PARAMS_DIR "/params.json"
 #define PARAMS_TMP  PARAMS_DIR "/params.json.tmp"
-
-/* In-memory cache.  Loaded at init, mutated on every set, persisted to
- * PARAMS_FILE atomically (write tmp → rename). */
-static cJSON *g_store = NULL;
 
 /* Compiled-in defaults — used when a key is missing from the file. */
 static const struct { const char *name; const char *value; } DEFAULTS[] = {
@@ -91,11 +88,56 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     { NULL, NULL }
 };
 
+/* In-memory store — flat array sized to the number of defaults.  Every
+ * known key has a slot from init time onwards; values are heap-owned. */
+#define STORE_MAX 64
+typedef struct { char *name; char *value; } Slot;
+static Slot g_store[STORE_MAX];
+static int  g_store_n = 0;
+static int  g_inited  = 0;
+
 static const char *compiled_default(const char *name) {
     for (int i = 0; DEFAULTS[i].name; i++)
         if (strcmp(DEFAULTS[i].name, name) == 0)
             return DEFAULTS[i].value;
     return "";
+}
+
+static int find_slot(const char *name) {
+    for (int i = 0; i < g_store_n; i++)
+        if (strcmp(g_store[i].name, name) == 0) return i;
+    return -1;
+}
+
+static void set_slot(const char *name, const char *value) {
+    int idx = find_slot(name);
+    if (idx >= 0) {
+        free(g_store[idx].value);
+        g_store[idx].value = strdup(value ? value : "");
+        return;
+    }
+    if (g_store_n >= STORE_MAX) return;
+    g_store[g_store_n].name  = strdup(name);
+    g_store[g_store_n].value = strdup(value ? value : "");
+    g_store_n++;
+}
+
+/* JSON-escape a string into f. */
+static void json_esc_to(FILE *f, const char *s) {
+    if (!s) return;
+    for (const char *p = s; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        switch (c) {
+            case '"':  fputs("\\\"", f); break;
+            case '\\': fputs("\\\\", f); break;
+            case '\n': fputs("\\n",  f); break;
+            case '\r': fputs("\\r",  f); break;
+            case '\t': fputs("\\t",  f); break;
+            default:
+                if (c < 0x20) fprintf(f, "\\u%04x", c);
+                else          fputc(c, f);
+        }
+    }
 }
 
 /* Read entire file → heap string.  Returns NULL on missing/empty. */
@@ -116,9 +158,7 @@ static char *slurp(const char *path) {
 
 /* Persist g_store to PARAMS_FILE atomically.  Returns 0 on success. */
 static int store_persist(void) {
-    if (!g_store) return -1;
-
-    /* Ensure dir exists (mkdir -p semantics for one level). */
+    /* Ensure dir exists. */
     struct stat st;
     if (stat(PARAMS_DIR, &st) != 0) {
         if (mkdir(PARAMS_DIR, 0755) != 0 && errno != EEXIST) {
@@ -128,27 +168,26 @@ static int store_persist(void) {
         }
     }
 
-    char *json = cJSON_PrintUnformatted(g_store);
-    if (!json) return -1;
-
     FILE *f = fopen(PARAMS_TMP, "wb");
     if (!f) {
         syslog(LOG_WARNING, "params: open(%s) for write failed: %s",
                PARAMS_TMP, strerror(errno));
-        free(json);
         return -1;
     }
-    size_t n = fwrite(json, 1, strlen(json), f);
-    int werr = (n != strlen(json));
+    fputs("{\n", f);
+    for (int i = 0; i < g_store_n; i++) {
+        fputs("  \"", f);
+        json_esc_to(f, g_store[i].name);
+        fputs("\": \"", f);
+        json_esc_to(f, g_store[i].value);
+        fputs("\"", f);
+        fputs(i + 1 < g_store_n ? ",\n" : "\n", f);
+    }
+    fputs("}\n", f);
     fflush(f);
     fsync(fileno(f));
     fclose(f);
-    free(json);
 
-    if (werr) {
-        unlink(PARAMS_TMP);
-        return -1;
-    }
     if (rename(PARAMS_TMP, PARAMS_FILE) != 0) {
         syslog(LOG_WARNING, "params: rename(%s → %s) failed: %s",
                PARAMS_TMP, PARAMS_FILE, strerror(errno));
@@ -158,15 +197,32 @@ static int store_persist(void) {
     return 0;
 }
 
-/* Load PARAMS_FILE into g_store.  If missing/corrupt, start empty. */
+/* Load PARAMS_FILE into g_store.  Missing/corrupt → empty store.       */
 static void store_load(void) {
-    if (g_store) { cJSON_Delete(g_store); g_store = NULL; }
-    char *raw = slurp(PARAMS_FILE);
-    if (raw) {
-        g_store = cJSON_Parse(raw);
-        free(raw);
+    /* Reset slots */
+    for (int i = 0; i < g_store_n; i++) {
+        free(g_store[i].name);
+        free(g_store[i].value);
     }
-    if (!g_store) g_store = cJSON_CreateObject();
+    g_store_n = 0;
+
+    char *raw = slurp(PARAMS_FILE);
+    if (!raw) return;
+    cJSON *root = cJSON_Parse(raw);
+    free(raw);
+    if (!root) {
+        syslog(LOG_WARNING, "params: %s exists but is unparseable; ignoring",
+               PARAMS_FILE);
+        return;
+    }
+    /* Walk children: each is a key→string member.  cJSON exposes this
+     * via item->child / ->next chain with ->string set to the key.    */
+    for (cJSON *it = root->child; it; it = it->next) {
+        if (cJSON_IsString(it) && it->string) {
+            set_slot(it->string, it->valuestring ? it->valuestring : "");
+        }
+    }
+    cJSON_Delete(root);
 }
 
 gboolean params_init(GError **error) {
@@ -177,10 +233,8 @@ gboolean params_init(GError **error) {
      * in the file (not just falling back to compiled defaults). */
     int seeded = 0;
     for (int i = 0; DEFAULTS[i].name; i++) {
-        cJSON *v = cJSON_GetObjectItem(g_store, DEFAULTS[i].name);
-        if (!cJSON_IsString(v)) {
-            cJSON_DeleteItemFromObject(g_store, DEFAULTS[i].name);
-            cJSON_AddStringToObject(g_store, DEFAULTS[i].name, DEFAULTS[i].value);
+        if (find_slot(DEFAULTS[i].name) < 0) {
+            set_slot(DEFAULTS[i].name, DEFAULTS[i].value);
             seeded++;
         }
     }
@@ -192,51 +246,45 @@ gboolean params_init(GError **error) {
             syslog(LOG_WARNING, "params: seeded %d default(s) but persist FAILED",
                    seeded);
     } else {
-        syslog(LOG_INFO, "params: loaded %s",
-               PARAMS_FILE);
+        syslog(LOG_INFO, "params: loaded %d keys from %s",
+               g_store_n, PARAMS_FILE);
     }
+    g_inited = 1;
     return TRUE;
 }
 
 gboolean params_init_readonly(void) {
-    /* CGI doesn't actually call this anymore — it uses cfg_get on the
-     * /tmp config file written by the daemon.  Kept for ABI compat with
-     * any caller that still references it. */
+    /* CGI doesn't actually call this — it uses cfg_get on the /tmp
+     * config file written by the daemon.  Kept for ABI compat. */
     store_load();
+    g_inited = 1;
     return TRUE;
 }
 
 void params_cleanup(void) {
-    if (g_store) {
-        cJSON_Delete(g_store);
-        g_store = NULL;
+    for (int i = 0; i < g_store_n; i++) {
+        free(g_store[i].name);
+        free(g_store[i].value);
     }
+    g_store_n = 0;
+    g_inited  = 0;
 }
 
 char *params_get(const char *name) {
-    if (g_store) {
-        cJSON *v = cJSON_GetObjectItem(g_store, name);
-        if (cJSON_IsString(v) && v->valuestring)
-            return strdup(v->valuestring);
-    }
+    int idx = find_slot(name);
+    if (idx >= 0) return strdup(g_store[idx].value ? g_store[idx].value : "");
     return strdup(compiled_default(name));
 }
 
 gboolean params_set(const char *name, const char *value, GError **error) {
-    if (!g_store) {
+    if (!g_inited) {
+        syslog(LOG_WARNING, "params_set(%s): store not initialized", name);
         if (error)
             *error = g_error_new(G_FILE_ERROR, G_FILE_ERROR_FAILED,
                                  "params store not initialized");
         return FALSE;
     }
-    /* cJSON's API has no direct "set string" — replace by delete+add. */
-    cJSON_DeleteItemFromObject(g_store, name);
-    if (!cJSON_AddStringToObject(g_store, name, value ? value : "")) {
-        if (error)
-            *error = g_error_new(G_FILE_ERROR, G_FILE_ERROR_FAILED,
-                                 "cJSON add failed for %s", name);
-        return FALSE;
-    }
+    set_slot(name, value);
     if (store_persist() != 0) {
         syslog(LOG_WARNING, "params_set(%s): persist failed", name);
         if (error)
