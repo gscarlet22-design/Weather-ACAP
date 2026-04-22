@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <syslog.h>
 
 #ifndef CGI_NO_CURL
 #include <curl/curl.h>
@@ -27,7 +28,10 @@ static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
 
 static char *http_get(const char *url, const char *user_agent) {
     CURL *curl = curl_easy_init();
-    if (!curl) return NULL;
+    if (!curl) {
+        syslog(LOG_WARNING, "nws/http_get: curl_easy_init failed");
+        return NULL;
+    }
 
     Buf buf = { NULL, 0 };
     curl_easy_setopt(curl, CURLOPT_URL,           url);
@@ -42,10 +46,28 @@ static char *http_get(const char *url, const char *user_agent) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
 
     CURLcode rc = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
 
-    if (rc != CURLE_OK) { free(buf.data); return NULL; }
+    if (rc != CURLE_OK) {
+        syslog(LOG_WARNING,
+               "nws/http_get FAILED: url=%s curl=%s (rc=%d) http=%ld",
+               url, curl_easy_strerror(rc), rc, http_code);
+        free(buf.data);
+        return NULL;
+    }
+    if (http_code >= 400) {
+        syslog(LOG_WARNING,
+               "nws/http_get non-2xx: url=%s http=%ld bytes=%zu",
+               url, http_code, buf.size);
+        /* Still return body — caller can decide what to do. */
+    } else {
+        syslog(LOG_INFO,
+               "nws/http_get ok: url=%s http=%ld bytes=%zu",
+               url, http_code, buf.size);
+    }
     return buf.data; /* caller must free */
 }
 
@@ -58,31 +80,39 @@ void nws_geocode_zip(const char *zip, const char *user_agent, NWSCoords *result)
 #ifndef CGI_NO_CURL
     if (!zip || !*zip) return;
 
+    /* Use zippopotam.us — free, no auth, ZIP-only.  The Census Geocoder's
+     * /locations/address endpoint requires `street`, so the previous
+     * "?zip=NNNNN" form silently returned zero matches.                  */
     char url[256];
-    snprintf(url, sizeof(url),
-        "https://geocoding.geo.census.gov/geocoder/locations/address"
-        "?benchmark=2020&format=json&zip=%s", zip);
+    snprintf(url, sizeof(url), "https://api.zippopotam.us/us/%s", zip);
 
     char *body = http_get(url, user_agent);
-    if (!body) return;
+    if (!body) {
+        syslog(LOG_WARNING, "nws_geocode_zip(\"%s\"): http_get returned NULL", zip);
+        return;
+    }
 
     cJSON *root = cJSON_Parse(body);
     free(body);
-    if (!root) return;
+    if (!root) {
+        syslog(LOG_WARNING, "nws_geocode_zip(\"%s\"): JSON parse failed", zip);
+        return;
+    }
 
-    /* result.addressMatches[0].coordinates.{x=lon, y=lat} */
-    cJSON *res     = cJSON_GetObjectItem(root, "result");
-    cJSON *matches = res ? cJSON_GetObjectItem(res, "addressMatches") : NULL;
-    cJSON *first   = (matches && cJSON_GetArraySize(matches) > 0)
-                     ? cJSON_GetArrayItem(matches, 0) : NULL;
-    cJSON *coords  = first ? cJSON_GetObjectItem(first, "coordinates") : NULL;
-    cJSON *x       = coords ? cJSON_GetObjectItem(coords, "x") : NULL;
-    cJSON *y       = coords ? cJSON_GetObjectItem(coords, "y") : NULL;
+    /* zippopotam: {"places":[{"latitude":"39.0577","longitude":"-94.6406", ...}]} */
+    cJSON *places = cJSON_GetObjectItem(root, "places");
+    cJSON *first  = (places && cJSON_GetArraySize(places) > 0)
+                    ? cJSON_GetArrayItem(places, 0) : NULL;
+    cJSON *lat_s  = first ? cJSON_GetObjectItem(first, "latitude")  : NULL;
+    cJSON *lon_s  = first ? cJSON_GetObjectItem(first, "longitude") : NULL;
 
-    if (cJSON_IsNumber(x) && cJSON_IsNumber(y)) {
-        result->lon   = x->valuedouble;
-        result->lat   = y->valuedouble;
-        result->valid = 1;
+    if (cJSON_IsString(lat_s) && cJSON_IsString(lon_s)) {
+        result->lat   = atof(lat_s->valuestring);
+        result->lon   = atof(lon_s->valuestring);
+        result->valid = (result->lat != 0.0 || result->lon != 0.0);
+    } else {
+        syslog(LOG_WARNING,
+               "nws_geocode_zip(\"%s\"): no usable places[0] in response", zip);
     }
     cJSON_Delete(root);
 #else

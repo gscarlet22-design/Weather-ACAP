@@ -488,12 +488,28 @@ static void endpoint_test_weather(void) {
     char *prov = cfg_get("WeatherProvider");
     char *ua   = cfg_get("NWSUserAgent");
 
+    syslog(LOG_INFO,
+           "test_weather: inputs zip=\"%s\" lat=\"%s\" lon=\"%s\" "
+           "provider=\"%s\" ua=\"%s\"",
+           zip ? zip : "", lat ? lat : "", lon ? lon : "",
+           prov ? prov : "", ua ? ua : "");
+
     WeatherSnapshot snap;
     memset(&snap, 0, sizeof(snap));
     int ok = weather_api_fetch(prov ? prov : "auto",
                                zip, lat, lon,
                                ua ? ua : "WeatherACAP/2.0",
                                &snap);
+
+    syslog(LOG_INFO,
+           "test_weather: result ok=%d valid=%d provider=\"%s\" "
+           "lat=%.6f lon=%.6f temp=%.1f hum=%d wind=%.1f desc=\"%s\" "
+           "alerts=%d",
+           ok, snap.conditions.valid,
+           snap.conditions.provider, snap.lat, snap.lon,
+           snap.conditions.temp_f, snap.conditions.humidity_pct,
+           snap.conditions.wind_speed_mph, snap.conditions.description,
+           snap.alerts.count);
 
     json_header();
     out_printf("{\"ok\":%s,\"valid\":%s,\"provider\":\"",

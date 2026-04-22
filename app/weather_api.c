@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 
 const char *weather_wind_dir_str(int deg) {
     if (deg < 0) return "---";
@@ -22,15 +23,31 @@ static int resolve_coords(const char *zip,
     if (lat_ov && *lat_ov && lon_ov && *lon_ov) {
         *lat_out = atof(lat_ov);
         *lon_out = atof(lon_ov);
-        return (*lat_out != 0.0 || *lon_out != 0.0);
+        int ok = (*lat_out != 0.0 || *lon_out != 0.0);
+        syslog(LOG_INFO,
+               "weather: resolve_coords via override → lat=%.6f lon=%.6f ok=%d",
+               *lat_out, *lon_out, ok);
+        return ok;
     }
-    if (!zip || !*zip) return 0;
+    if (!zip || !*zip) {
+        syslog(LOG_WARNING,
+               "weather: resolve_coords FAILED: no ZIP and no lat/lon override");
+        return 0;
+    }
 
     NWSCoords c;
     nws_geocode_zip(zip, user_agent, &c);
-    if (!c.valid) return 0;
+    if (!c.valid) {
+        syslog(LOG_WARNING,
+               "weather: nws_geocode_zip(\"%s\") FAILED: invalid response",
+               zip);
+        return 0;
+    }
     *lat_out = c.lat;
     *lon_out = c.lon;
+    syslog(LOG_INFO,
+           "weather: nws_geocode_zip(\"%s\") → lat=%.6f lon=%.6f",
+           zip, c.lat, c.lon);
     return 1;
 }
 
@@ -59,6 +76,9 @@ int weather_api_fetch(const char *provider,
     if (use_nws) {
         NWSObservation obs;
         nws_get_observation(lat, lon, user_agent, &obs);
+        syslog(LOG_INFO,
+               "weather: nws_get_observation lat=%.4f lon=%.4f → valid=%d",
+               lat, lon, obs.valid);
         if (obs.valid) {
             snap->conditions.temp_f        = obs.temp_f;
             snap->conditions.wind_speed_mph = obs.wind_speed_mph;
@@ -74,6 +94,9 @@ int weather_api_fetch(const char *provider,
     if (!snap->conditions.valid && use_om) {
         OMObservation om;
         openmeteo_get_observation(lat, lon, &om);
+        syslog(LOG_INFO,
+               "weather: openmeteo_get_observation lat=%.4f lon=%.4f → valid=%d",
+               lat, lon, om.valid);
         if (om.valid) {
             snap->conditions.temp_f        = om.temp_f;
             snap->conditions.wind_speed_mph = om.wind_speed_mph;
