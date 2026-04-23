@@ -192,9 +192,11 @@ static void escape_json(const char *in, char *out, size_t outlen) {
     out[j] = '\0';
 }
 
-/* Parse the modern JSON-RPC response: {"data":{"identifier":N}} on success,
- * {"error":{"code":N,"message":"..."}} on failure.  Returns 1 and writes the
- * identifier into *out on success.  On error, logs the message and returns 0. */
+/* Parse the modern JSON-RPC response.  Observed schemas in the wild:
+ *   AXIS OS 12.9+  → {"apiVersion":"1.8","data":{"camera":1,"identity":N},"method":"addText"}
+ *   Earlier docs   → {"apiVersion":"1.0","data":{"identifier":N}}
+ * Error shape     → {"error":{"code":N,"message":"..."}}
+ * We accept either key so the app survives firmware schema drift. */
 static int parse_identifier_json(const char *resp, int *out) {
     if (!resp) return 0;
     cJSON *root = cJSON_Parse(resp);
@@ -203,7 +205,8 @@ static int parse_identifier_json(const char *resp, int *out) {
     int ok = 0;
     cJSON *data = cJSON_GetObjectItem(root, "data");
     if (data) {
-        cJSON *id = cJSON_GetObjectItem(data, "identifier");
+        cJSON *id = cJSON_GetObjectItem(data, "identity");
+        if (!cJSON_IsNumber(id)) id = cJSON_GetObjectItem(data, "identifier");
         if (cJSON_IsNumber(id)) {
             *out = (int)id->valuedouble;
             ok = 1;
