@@ -138,9 +138,10 @@ void overlay_render_text(const WeatherSnapshot *snap,
 
 #ifndef CGI_NO_CURL
 #include <curl/curl.h>
+#include "cJSON.h"
 
-static char g_overlay_id[64] = { 0 };
-static int  g_has_video      = -1;
+static int g_overlay_id = -1;       /* -1 = not yet created */
+static int g_has_video  = -1;
 
 static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     char **pp = (char **)ud;
@@ -159,50 +160,89 @@ static int has_video(const char *user, const char *pass) {
     return g_has_video;
 }
 
-/* Map UI-style position (camelCase) to the legacy dynamicoverlay.cgi's
- * hyphenated form.  Accepts already-hyphenated values unchanged so the
- * config can be set directly for edge cases.                              */
+/* Normalize position to the camelCase form the JSON API expects.
+ * Accepts hyphenated input too so legacy configs keep working. */
 static const char *map_position(const char *pos) {
-    if (!pos || !*pos)                   return "top-left";
-    if (strcmp(pos, "topLeft") == 0)     return "top-left";
-    if (strcmp(pos, "topRight") == 0)    return "top-right";
-    if (strcmp(pos, "bottomLeft") == 0)  return "bottom-left";
-    if (strcmp(pos, "bottomRight") == 0) return "bottom-right";
+    if (!pos || !*pos)                    return "topLeft";
+    if (strcmp(pos, "top-left") == 0)     return "topLeft";
+    if (strcmp(pos, "top-right") == 0)    return "topRight";
+    if (strcmp(pos, "bottom-left") == 0)  return "bottomLeft";
+    if (strcmp(pos, "bottom-right") == 0) return "bottomRight";
     return pos;
 }
 
-/* Extract the identifier from a legacy CGI response body.  Bodies look
- * like "Identifier=0\n" on success.  Returns 1 if an id was written. */
-static int parse_identifier(const char *resp, char *out, size_t outlen) {
-    if (!resp) return 0;
-    const char *p = strstr(resp, "Identifier=");
-    if (!p) return 0;
-    p += 11; /* strlen("Identifier=") */
-    size_t i = 0;
-    while (*p && *p != '\r' && *p != '\n' && *p != ' ' && i + 1 < outlen) {
-        out[i++] = *p++;
+/* Minimal JSON string escaper — same shape as webhook.c::escape_json.
+ * Drops control chars (<0x20) rather than emitting \uXXXX since the
+ * overlay text never carries any. UTF-8 multibyte passes through. */
+static void escape_json(const char *in, char *out, size_t outlen) {
+    size_t j = 0;
+    if (!in) in = "";
+    for (size_t i = 0; in[i] && j + 2 < outlen; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (c == '"' || c == '\\') {
+            if (j + 3 >= outlen) break;
+            out[j++] = '\\';
+            out[j++] = c;
+        } else if (c < 0x20) {
+            continue;
+        } else {
+            out[j++] = c;
+        }
     }
-    out[i] = '\0';
-    return i > 0;
+    out[j] = '\0';
+}
+
+/* Parse the modern JSON-RPC response: {"data":{"identifier":N}} on success,
+ * {"error":{"code":N,"message":"..."}} on failure.  Returns 1 and writes the
+ * identifier into *out on success.  On error, logs the message and returns 0. */
+static int parse_identifier_json(const char *resp, int *out) {
+    if (!resp) return 0;
+    cJSON *root = cJSON_Parse(resp);
+    if (!root) return 0;
+
+    int ok = 0;
+    cJSON *data = cJSON_GetObjectItem(root, "data");
+    if (data) {
+        cJSON *id = cJSON_GetObjectItem(data, "identifier");
+        if (cJSON_IsNumber(id)) {
+            *out = (int)id->valuedouble;
+            ok = 1;
+        }
+    }
+    cJSON_Delete(root);
+    return ok;
 }
 
 /*
- * Overlay push via the legacy VAPIX Dynamic Overlay CGI.
+ * Overlay push via the modern AXIS Dynamic Overlay JSON-RPC API.
  *
- * The original code tried to PUT JSON to /vapix/overlays/text/<id> — that
- * endpoint does not exist on any AXIS OS version and returned HTTP 404.
+ * Two prior approaches failed:
+ *   1. PUT /vapix/overlays/text/<id>  — endpoint never existed (HTTP 404).
+ *   2. GET /axis-cgi/dynamicoverlay/dynamicoverlay.cgi?action=addtext&...
+ *      — legacy form on AXIS OS 10. On 11+/12 the same URL responds with
+ *      HTTP 200 + {"error":{"code":200,"message":"JSON input error"}}.
  *
- * The Dynamic Overlay CGI at /axis-cgi/dynamicoverlay/dynamicoverlay.cgi
- * has been the stable contract for text overlays across ARTPEC-7/8/9 and
- * CV25, AXIS OS 10/11/12.  It uses GET with query params:
+ * The current contract (CV25, ARTPEC-8/9, AXIS OS 11+) is JSON-RPC POST:
  *
- *   action=addtext&camera=1&position=top-left&text=...   → "Identifier=N"
- *   action=settext&identifier=N&text=...                 → "OK"
- *   action=remove&identifier=N                           → "OK"
+ *   POST /axis-cgi/dynamicoverlay/dynamicoverlay.cgi
+ *   Content-Type: application/json
  *
- * The text field is URL-encoded via curl_easy_escape so Unicode glyphs
- * (compass arrows, sun/moon symbols) round-trip correctly.
+ *   {"apiVersion":"1.0","method":"addText",
+ *    "params":{"camera":1,"position":"topLeft","text":"..."}}
+ *
+ *   → {"apiVersion":"1.0","data":{"identifier":0}}
+ *
+ *   {"apiVersion":"1.0","method":"setText",
+ *    "params":{"identifier":0,"text":"..."}}
+ *
+ *   {"apiVersion":"1.0","method":"remove","params":{"identifier":0}}
+ *
+ * Text is JSON-string-escaped (quotes, backslashes); UTF-8 glyphs pass
+ * through untouched.
  */
+
+#define OVERLAY_URL "http://localhost/axis-cgi/dynamicoverlay/dynamicoverlay.cgi"
+
 void overlay_update(const WeatherSnapshot *snap,
                     const OverlayConfig *cfg,
                     const char *vapix_user,
@@ -214,39 +254,40 @@ void overlay_update(const WeatherSnapshot *snap,
     char text[300];
     overlay_render_text(snap, cfg, text, sizeof(text));
 
-    CURL *curl = curl_easy_init();
-    if (!curl) return;
-
-    /* URL-encode the overlay text.  curl_easy_escape handles Unicode
-     * (multi-byte UTF-8), spaces, braces, pipes — everything render
-     * might emit. */
-    char *enc_text = curl_easy_escape(curl, text, 0);
-    if (!enc_text) { curl_easy_cleanup(curl); return; }
+    char esc[600];
+    escape_json(text, esc, sizeof(esc));
 
     const char *pos = map_position(cfg->position);
 
-    char url[1200];
-    if (g_overlay_id[0]) {
-        snprintf(url, sizeof(url),
-            "http://localhost/axis-cgi/dynamicoverlay/dynamicoverlay.cgi"
-            "?action=settext&identifier=%s&text=%s",
-            g_overlay_id, enc_text);
+    char body[1024];
+    if (g_overlay_id >= 0) {
+        snprintf(body, sizeof(body),
+            "{\"apiVersion\":\"1.0\",\"method\":\"setText\","
+             "\"params\":{\"identifier\":%d,\"text\":\"%s\"}}",
+            g_overlay_id, esc);
     } else {
-        snprintf(url, sizeof(url),
-            "http://localhost/axis-cgi/dynamicoverlay/dynamicoverlay.cgi"
-            "?action=addtext&camera=1&position=%s&text=%s",
-            pos, enc_text);
+        snprintf(body, sizeof(body),
+            "{\"apiVersion\":\"1.0\",\"method\":\"addText\","
+             "\"params\":{\"camera\":1,\"position\":\"%s\",\"text\":\"%s\"}}",
+            pos, esc);
     }
-    curl_free(enc_text);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return;
 
     char userpwd[256];
     snprintf(userpwd, sizeof(userpwd), "%s:%s",
              vapix_user ? vapix_user : "", vapix_pass ? vapix_pass : "");
 
+    struct curl_slist *hdrs = curl_slist_append(NULL,
+        "Content-Type: application/json");
+
     char *resp = NULL;
-    curl_easy_setopt(curl, CURLOPT_URL,           url);
+    curl_easy_setopt(curl, CURLOPT_URL,           OVERLAY_URL);
     curl_easy_setopt(curl, CURLOPT_HTTPAUTH,      CURLAUTH_DIGEST);
     curl_easy_setopt(curl, CURLOPT_USERPWD,       userpwd);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER,    hdrs);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,    body);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT,       10L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &resp);
@@ -254,35 +295,46 @@ void overlay_update(const WeatherSnapshot *snap,
     curl_easy_perform(curl);
     long code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+    curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
 
-    if (code == 200 && resp && !g_overlay_id[0]) {
-        if (parse_identifier(resp, g_overlay_id, sizeof(g_overlay_id))) {
-            syslog(LOG_INFO, "overlay: created identifier=%s position=%s",
-                   g_overlay_id, pos);
-        } else {
+    if (code == 200 && resp) {
+        if (g_overlay_id < 0) {
+            int new_id = -1;
+            if (parse_identifier_json(resp, &new_id)) {
+                g_overlay_id = new_id;
+                syslog(LOG_INFO, "overlay: created identifier=%d position=%s",
+                       g_overlay_id, pos);
+            } else {
+                syslog(LOG_WARNING,
+                       "overlay: addText HTTP 200 but no identifier in response: %.180s",
+                       resp);
+            }
+        } else if (strstr(resp, "\"error\"")) {
+            /* setText reported an error — most likely the identifier is
+             * stale (camera reboot, overlay cleared by another app).
+             * Drop it so the next tick re-runs addText. */
             syslog(LOG_WARNING,
-                   "overlay: addtext HTTP 200 but no Identifier in response: %.120s",
-                   resp);
+                   "overlay: setText id=%d returned error, will re-add: %.180s",
+                   g_overlay_id, resp);
+            g_overlay_id = -1;
         }
     } else if (code != 200) {
-        syslog(LOG_WARNING, "overlay: update HTTP %ld body=%.120s",
+        syslog(LOG_WARNING, "overlay: update HTTP %ld body=%.180s",
                code, resp ? resp : "(null)");
-        /* If the stored id became stale (camera restart, overlay removed
-         * by another app), the next call will re-addtext.  Reset it. */
-        if (code == 400 || code == 404) g_overlay_id[0] = '\0';
+        if (code == 400 || code == 401 || code == 404) g_overlay_id = -1;
     }
 
     free(resp);
 }
 
 void overlay_delete(const char *vapix_user, const char *vapix_pass) {
-    if (!g_overlay_id[0]) return;
+    if (g_overlay_id < 0) return;
 
-    char url[512];
-    snprintf(url, sizeof(url),
-        "http://localhost/axis-cgi/dynamicoverlay/dynamicoverlay.cgi"
-        "?action=remove&identifier=%s",
+    char body[128];
+    snprintf(body, sizeof(body),
+        "{\"apiVersion\":\"1.0\",\"method\":\"remove\","
+         "\"params\":{\"identifier\":%d}}",
         g_overlay_id);
 
     CURL *curl = curl_easy_init();
@@ -292,14 +344,20 @@ void overlay_delete(const char *vapix_user, const char *vapix_pass) {
     snprintf(userpwd, sizeof(userpwd), "%s:%s",
              vapix_user ? vapix_user : "", vapix_pass ? vapix_pass : "");
 
-    curl_easy_setopt(curl, CURLOPT_URL,           url);
-    curl_easy_setopt(curl, CURLOPT_HTTPAUTH,      CURLAUTH_DIGEST);
-    curl_easy_setopt(curl, CURLOPT_USERPWD,       userpwd);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       5L);
+    struct curl_slist *hdrs = curl_slist_append(NULL,
+        "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL,        OVERLAY_URL);
+    curl_easy_setopt(curl, CURLOPT_HTTPAUTH,   CURLAUTH_DIGEST);
+    curl_easy_setopt(curl, CURLOPT_USERPWD,    userpwd);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,    5L);
 
     curl_easy_perform(curl);
+    curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
-    g_overlay_id[0] = '\0';
+    g_overlay_id = -1;
 }
 
 #else /* CGI_NO_CURL — overlay push not available, render-only mode */
