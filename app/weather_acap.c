@@ -165,7 +165,14 @@ static const char *CONFIG_PARAMS[] = {
 };
 
 static void write_config_file(void) {
-    FILE *f = fopen(CONFIG_FILE, "w");
+    /* Atomic write: temp + rename so a concurrent CGI read can never see
+     * a half-written file.  The CGI also writes this file eagerly on
+     * save (see config_cgi.c::write_save_file) — rename() is the only
+     * way two writers can coexist without occasionally producing a
+     * truncated, unparseable JSON for a reader. */
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", CONFIG_FILE);
+    FILE *f = fopen(tmp, "w");
     if (!f) return;
     fprintf(f, "{\n");
     for (int i = 0; CONFIG_PARAMS[i]; i++) {
@@ -178,7 +185,9 @@ static void write_config_file(void) {
         free(v);
     }
     fprintf(f, "}\n");
+    fflush(f);
     fclose(f);
+    if (rename(tmp, CONFIG_FILE) != 0) unlink(tmp);
 }
 
 static void write_pid_file(void) {

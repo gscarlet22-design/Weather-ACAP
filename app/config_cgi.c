@@ -264,17 +264,19 @@ static void signal_daemon(void) {
     }
 }
 
-/* Write a save file as JSON with the given key-value overrides applied
- * on top of the current config.  Keys/values are param names (not form names). */
-static int write_save_file(const char *overrides[][2], int count) {
-    FILE *f = fopen(SAVE_FILE, "w");
+/* Write a flat JSON object of {param: value} to `path`, atomically (via
+ * temp+rename), with the given overrides applied on top of the current
+ * config.  Keys/values are param names (not form names). */
+static int write_overrides_to(const char *path,
+                              const char *overrides[][2], int count) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "w");
     if (!f) return 0;
     fprintf(f, "{\n");
 
-    /* Start with all current config values */
     int first = 1;
     for (int i = 0; FIELDS[i].param; i++) {
-        /* Check if this field is overridden */
         const char *val = NULL;
         for (int j = 0; j < count; j++) {
             if (strcmp(overrides[j][0], FIELDS[i].param) == 0) {
@@ -282,25 +284,44 @@ static int write_save_file(const char *overrides[][2], int count) {
                 break;
             }
         }
+        char *cur = NULL;
         if (!val) {
-            /* Use current config value */
-            char *cur = cfg_get(FIELDS[i].param);
-            if (!first) fprintf(f, ",\n");
-            fprintf(f, "  \"%s\": \"", FIELDS[i].param);
-            json_esc_to(f, cur);
-            fprintf(f, "\"");
-            free(cur);
-        } else {
-            if (!first) fprintf(f, ",\n");
-            fprintf(f, "  \"%s\": \"", FIELDS[i].param);
-            json_esc_to(f, val);
-            fprintf(f, "\"");
+            cur = cfg_get(FIELDS[i].param);
+            val = cur;
         }
+        if (!first) fprintf(f, ",\n");
+        fprintf(f, "  \"%s\": \"", FIELDS[i].param);
+        json_esc_to(f, val ? val : "");
+        fprintf(f, "\"");
+        free(cur);
         first = 0;
     }
     fprintf(f, "\n}\n");
+    fflush(f);
     fclose(f);
+
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        return 0;
+    }
     return 1;
+}
+
+/* Write the save file (consumed by the daemon on SIGUSR1) AND eagerly
+ * refresh the export config file the CGI itself reads.
+ *
+ * Why both: the daemon's apply_save_file() runs at most once per second
+ * (check_reload_cb), so without the eager CONFIG_FILE write the very next
+ * GET /config — issued by the browser immediately after the save response
+ * — would return stale values.  The browser would then overwrite the
+ * user's freshly-typed form fields with the old data and the user would
+ * have to save twice for the UI to "stick".  The daemon will rewrite the
+ * same content ~1s later from its own params store; the two writes agree,
+ * so there's no divergence. */
+static int write_save_file(const char *overrides[][2], int count) {
+    int ok_save = write_overrides_to(SAVE_FILE,   overrides, count);
+    int ok_cfg  = write_overrides_to(CONFIG_FILE, overrides, count);
+    return ok_save && ok_cfg;
 }
 
 /* ── Endpoints ─────────────────────────────────────────────────────────── */
