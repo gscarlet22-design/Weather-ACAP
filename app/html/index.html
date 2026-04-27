@@ -42,6 +42,7 @@
     <button class="tab-btn"        data-tab="location"     type="button">Location</button>
     <button class="tab-btn"        data-tab="alerts"       type="button">Alerts &amp; Triggers</button>
     <button class="tab-btn"        data-tab="overlay"      type="button">Overlay</button>
+    <button class="tab-btn"        data-tab="snapshots"    type="button">Snapshots</button>
     <button class="tab-btn"        data-tab="diagnostics"  type="button">Diagnostics</button>
     <button class="tab-btn"        data-tab="advanced"     type="button">Advanced</button>
   </nav>
@@ -244,6 +245,74 @@
 
           <div class="form-actions">
             <button class="btn btn-primary" data-save="overlay" type="button">Save overlay settings</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Snapshots -->
+    <section id="tab-snapshots" class="tab-pane">
+      <div class="card">
+        <div class="card-header">
+          <h2>Snapshot on Alert</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-snapshot-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <p class="hint">Capture a JPEG image from the camera via VAPIX whenever an alert fires. Saved to SD card when present, otherwise to <code>/tmp</code>.</p>
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-snapshot-resolution">Resolution</label>
+              <select id="f-snapshot-resolution">
+                <option value="1920x1080">1920&times;1080 (1080p)</option>
+                <option value="1280x720">1280&times;720 (720p)</option>
+                <option value="640x480">640&times;480 (VGA)</option>
+                <option value="320x240">320&times;240 (QVGA)</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label for="f-snapshot-save-dir">Save directory <small class="opt">(optional)</small></label>
+              <input id="f-snapshot-save-dir" type="text" placeholder="auto-detect SD card">
+              <small>Leave blank to auto-select. SD card preferred; falls back to <code>/tmp/weather_acap_snaps</code>.</small>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Capture when&hellip;</label>
+            <div class="checkbox-group">
+              <label class="checkbox">
+                <input id="f-snapshot-on-activate" type="checkbox">
+                <span>Alert activates</span>
+              </label>
+              <label class="checkbox" style="margin-top:0.4rem;">
+                <input id="f-snapshot-on-clear" type="checkbox">
+                <span>Alert clears</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" data-save="snapshots" type="button">Save snapshot settings</button>
+      </div>
+
+      <div class="card" style="margin-top:1.2rem;">
+        <div class="card-header">
+          <h2>Saved Snapshots</h2>
+          <small id="snap-save-dir-info" class="dim"></small>
+        </div>
+        <div class="card-body">
+          <div class="diag-row">
+            <button class="btn btn-ghost" id="snap-test-btn" type="button">Take test snapshot now</button>
+            <div id="snap-test-result" class="diag-result">&mdash;</div>
+          </div>
+          <div id="snap-gallery">
+            <p class="empty">No snapshots yet. Enable capture above and wait for an alert, or click &ldquo;Take test snapshot now.&rdquo;</p>
+          </div>
+          <div class="form-actions" style="margin-top:0.6rem;">
+            <button class="btn btn-ghost btn-small" id="snap-refresh-btn" type="button">Refresh list</button>
           </div>
         </div>
       </div>

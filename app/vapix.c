@@ -1,9 +1,11 @@
 #include "vapix.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include <unistd.h>
 
 #ifndef CGI_NO_CURL
 #include <curl/curl.h>
@@ -20,6 +22,11 @@ static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     b->size += n;
     b->data[b->size] = '\0';
     return n;
+}
+
+/* Binary-safe write-to-file callback for JPEG capture. */
+static size_t write_to_file_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
+    return fwrite(ptr, sz, nmemb, (FILE *)ud);
 }
 
 static void set_auth(CURL *curl, const char *user, const char *pass) {
@@ -132,6 +139,68 @@ char *vapix_device_info(const char *user, const char *pass) {
     return NULL;
 }
 
+int vapix_snapshot_to_file(const char *path,
+                           const char *resolution,
+                           const char *user,
+                           const char *pass,
+                           long *http_code_out) {
+    char url[384];
+    if (resolution && *resolution)
+        snprintf(url, sizeof(url),
+                 "http://localhost/axis-cgi/jpg/image.cgi?camera=1&resolution=%s",
+                 resolution);
+    else
+        snprintf(url, sizeof(url),
+                 "http://localhost/axis-cgi/jpg/image.cgi?camera=1");
+
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        syslog(LOG_WARNING, "vapix: snapshot: fopen(%s): %s", path, strerror(errno));
+        return -1;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) { fclose(f); unlink(path); return -1; }
+
+    set_auth(curl, user, pass);
+    curl_easy_setopt(curl, CURLOPT_URL,           url);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       15L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_file_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     f);
+
+    CURLcode rc = curl_easy_perform(curl);
+
+    /* Capture Content-Type before cleanup */
+    char *ct = NULL;
+    curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct);
+    int is_jpeg = (ct && strstr(ct, "image/jpeg") != NULL);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(curl);
+    fclose(f);
+
+    if (http_code_out) *http_code_out = http_code;
+
+    if (rc != CURLE_OK) {
+        syslog(LOG_WARNING, "vapix: snapshot curl error: %s", curl_easy_strerror(rc));
+        unlink(path);
+        return -1;
+    }
+    if (http_code != 200) {
+        syslog(LOG_WARNING, "vapix: snapshot HTTP %ld (not 200)", http_code);
+        unlink(path);
+        return -1;
+    }
+    if (!is_jpeg) {
+        syslog(LOG_WARNING, "vapix: snapshot unexpected content-type: %s",
+               ct ? ct : "(null)");
+        unlink(path);
+        return -1;
+    }
+    return 0;
+}
+
 #else /* CGI_NO_CURL — stub implementations: VAPIX not available without libcurl */
 
 long vapix_port_set(int port, int activate, const char *user, const char *pass) {
@@ -160,6 +229,14 @@ int vapix_has_video(const char *user, const char *pass) {
 char *vapix_device_info(const char *user, const char *pass) {
     (void)user; (void)pass;
     return NULL;
+}
+
+int vapix_snapshot_to_file(const char *path, const char *resolution,
+                           const char *user, const char *pass,
+                           long *http_code_out) {
+    (void)path; (void)resolution; (void)user; (void)pass;
+    if (http_code_out) *http_code_out = 0;
+    return -1;
 }
 
 #endif /* CGI_NO_CURL */

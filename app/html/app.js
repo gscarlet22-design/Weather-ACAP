@@ -79,6 +79,7 @@
         var pane = $("tab-" + tab);
         if (pane) pane.classList.add("active");
         /* lazy-load some panes */
+        if (tab === "snapshots")   refreshSnapshots();
         if (tab === "diagnostics") refreshDeviceInfo();
         if (tab === "diagnostics") refreshHistory();
       });
@@ -113,6 +114,12 @@
       $("f-webhook-url").value         = cfg.webhook_url || "";
       $("f-webhook-alerts-only").checked = (cfg.webhook_on_alerts_only || "").toLowerCase() === "yes";
       $("f-mock-mode").checked         = (cfg.mock_mode || "").toLowerCase() === "yes";
+      /* Snapshot */
+      $("f-snapshot-enabled").checked     = (cfg.snapshot_enabled || "").toLowerCase() === "yes";
+      $("f-snapshot-resolution").value    = cfg.snapshot_resolution || "1280x720";
+      $("f-snapshot-save-dir").value      = cfg.snapshot_save_dir || "";
+      $("f-snapshot-on-activate").checked = (cfg.snapshot_on_activate || "yes").toLowerCase() === "yes";
+      $("f-snapshot-on-clear").checked    = (cfg.snapshot_on_clear || "").toLowerCase() === "yes";
       /* Alert table */
       buildAlertTable(cfg.alert_map || "");
     });
@@ -136,6 +143,12 @@
       pairs.push(encField("overlay_max_alerts",     $("f-overlay-max").value));
       pairs.push(encField("overlay_template",       $("f-overlay-template").value));
       pairs.push(encField("overlay_alert_template", $("f-overlay-alert-template").value));
+    } else if (section === "snapshots") {
+      pairs.push(encField("snapshot_enabled",     $("f-snapshot-enabled").checked ? "yes" : "no"));
+      pairs.push(encField("snapshot_resolution",  $("f-snapshot-resolution").value));
+      pairs.push(encField("snapshot_save_dir",    $("f-snapshot-save-dir").value.trim()));
+      pairs.push(encField("snapshot_on_activate", $("f-snapshot-on-activate").checked ? "yes" : "no"));
+      pairs.push(encField("snapshot_on_clear",    $("f-snapshot-on-clear").checked ? "yes" : "no"));
     } else if (section === "advanced") {
       pairs.push(encField("system_enabled",          $("f-system-enabled").checked ? "yes" : "no"));
       pairs.push(encField("vapix_user",              $("f-vapix-user").value.trim()));
@@ -168,6 +181,7 @@
             if (section === "location")   btn.textContent = "Save location settings";
             if (section === "alerts")     btn.textContent = "Save alert mapping";
             if (section === "overlay")    btn.textContent = "Save overlay settings";
+            if (section === "snapshots")  btn.textContent = "Save snapshot settings";
             if (section === "advanced")   btn.textContent = "Save advanced settings";
             loadConfig(); /* refresh */
           });
@@ -562,12 +576,75 @@
     });
   }
 
+  /* ── Snapshots ──────────────────────────────────────────────────────────── */
+
+  function refreshSnapshots() {
+    cgi("snapshot_list").then(function (r) {
+      var info = $("snap-save-dir-info");
+      if (info) info.textContent = r.save_dir ? ("Saving to: " + r.save_dir) : "";
+
+      var gallery = $("snap-gallery");
+      if (!gallery) return;
+
+      var snaps = r.snapshots || [];
+      if (snaps.length === 0) {
+        gallery.innerHTML = '<p class="empty">No snapshots yet. Enable capture above and wait for an alert, or click \u201cTake test snapshot now.\u201d</p>';
+        return;
+      }
+
+      var html = '<div class="snap-grid">';
+      snaps.forEach(function (s) {
+        var ts = (s.ts || "").substring(0, 19).replace("T", " ");
+        var url = CGI + "?action=snapshot_image&file=" + encodeURIComponent(s.filename);
+        /* Derive a human-readable label from the filename
+         * e.g. "20260427_142537_Tornado_Warning.jpg" → "Tornado Warning" */
+        var label = s.filename.replace(/^\d{8}_\d{6}_/, "").replace(/\.jpg$/i, "").replace(/_/g, " ");
+        html += '<div class="snap-item">' +
+                '<a href="' + url + '" target="_blank" rel="noopener">' +
+                '<img src="' + url + '" class="snap-thumb" alt="' + escHtml(s.filename) + '" loading="lazy">' +
+                '</a>' +
+                '<div class="snap-meta">' +
+                '<span class="snap-ts">' + escHtml(ts) + '</span>' +
+                '<span class="snap-name">' + escHtml(label) + '</span>' +
+                '</div></div>';
+      });
+      html += '</div>';
+      gallery.innerHTML = html;
+    }).catch(function () { /* silent — directory may not exist yet */ });
+  }
+
+  function initSnapshots() {
+    $("snap-test-btn").addEventListener("click", function () {
+      var res = $("snap-test-result");
+      res.textContent = "Capturing\u2026";
+      res.className = "diag-result busy";
+      cgi("test_snapshot", { method: "POST", body: "" })
+        .then(function (r) {
+          if (r.ok) {
+            res.textContent = "Saved: " + (r.path || r.save_dir || "unknown path");
+            res.className = "diag-result ok";
+            refreshSnapshots();
+          } else {
+            res.textContent = "Capture failed. Check VAPIX credentials and that the camera has video.";
+            res.className = "diag-result bad";
+          }
+        })
+        .catch(function (e) {
+          res.textContent = "Error: " + e.message;
+          res.className = "diag-result bad";
+        });
+    });
+
+    $("snap-refresh-btn").addEventListener("click", refreshSnapshots);
+  }
+
   /* ── Boot ────────────────────────────────────────────────────────────────── */
   function init() {
     initTabs();
     initSaveButtons();
     initAlertButtons();
     initOverlay();
+    initSnapshots();
     initDiagnostics();
     initDeviceRefresh();
     initExportImport();

@@ -769,6 +769,64 @@ pre {
   to { opacity: 0; transform: translateX(30px); }
 }
 
+/* ── Snapshot gallery ────────────────────────────────────────────────────── */
+.snap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 0.8rem;
+  margin-top: 0.8rem;
+}
+
+.snap-item {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  transition: border-color 0.15s, background 0.15s;
+}
+.snap-item:hover {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.snap-thumb {
+  width: 100%;
+  height: 110px;
+  object-fit: cover;
+  display: block;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.snap-meta {
+  padding: 0.45rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.snap-ts {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--text-dim);
+}
+
+.snap-name {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.1rem 0;
+}
+
+.dim { color: var(--text-dim); }
+
 /* ── Status pill animations ──────────────────────────────────────────────── */
 .pill-alert {
   animation: pillPulse 2s ease-in-out infinite;
