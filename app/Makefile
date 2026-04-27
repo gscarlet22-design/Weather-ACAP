@@ -39,14 +39,14 @@ CGI_LDLIBS    = $(shell pkg-config --libs $(CGI_PKGS)) -lm
 MAIN_SRCS = weather_acap.c nws.c openmeteo.c weather_api.c \
             alerts.c overlay.c params.c cJSON.c \
             vapix.c history.c webhook.c snapshot.c \
-            mqtt.c email.c
+            mqtt.c email.c threshold.c
 MAIN_OBJS = $(MAIN_SRCS:.c=.o)
 
 # CGI sources — no params.o (no axparameter), uses file-based config instead
 CGI_SRCS = config_cgi.c
 CGI_SHARED_OBJS = cgi_cJSON.o cgi_vapix.o cgi_weather_api.o cgi_nws.o \
                   cgi_openmeteo.o cgi_overlay.o cgi_alerts.o cgi_webhook.o \
-                  cgi_snapshot.o cgi_mqtt.o cgi_email.o
+                  cgi_snapshot.o cgi_mqtt.o cgi_email.o cgi_threshold.o
 
 .PHONY: all clean
 

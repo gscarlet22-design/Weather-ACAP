@@ -14,12 +14,17 @@
  *
  * Filename format: YYYYMMDD_HHMMSS_<sanitized_alert_type>.jpg
  * e.g.: 20260427_142537_Tornado_Warning.jpg
+ *
+ * Sprint 5 — auto-delete: after each successful capture, snapshot_prune()
+ * removes the oldest .jpg files in the directory when a max_count limit
+ * is configured.
  */
 
 #include "snapshot.h"
 #include "vapix.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,6 +77,74 @@ static void sanitize_type(const char *in, char *out, size_t outlen) {
     for (const char *p = in; *p && i + 1 < outlen && i < 48; p++)
         out[i++] = isalnum((unsigned char)*p) ? *p : '_';
     out[i] = '\0';
+}
+
+/* ── Auto-delete (snapshot_prune) ───────────────────────────────────────── */
+
+#define PRUNE_MAX_FILES 512   /* safety cap for the scan */
+
+typedef struct {
+    char   path[512];
+    time_t mtime;
+} PruneEntry;
+
+/* qsort comparator: oldest first */
+static int prune_cmp(const void *a, const void *b) {
+    const PruneEntry *pa = (const PruneEntry *)a;
+    const PruneEntry *pb = (const PruneEntry *)b;
+    if (pa->mtime < pb->mtime) return -1;
+    if (pa->mtime > pb->mtime) return  1;
+    return 0;
+}
+
+void snapshot_prune(const char *dir, int max_count) {
+    if (max_count <= 0 || !dir || !*dir) return;
+
+    DIR *d = opendir(dir);
+    if (!d) return;
+
+    PruneEntry *entries = (PruneEntry *)malloc(PRUNE_MAX_FILES * sizeof(PruneEntry));
+    if (!entries) { closedir(d); return; }
+    int n = 0;
+
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL && n < PRUNE_MAX_FILES) {
+        /* Only consider .jpg files */
+        size_t len = strlen(de->d_name);
+        if (len < 5) continue;
+        if (strcasecmp(de->d_name + len - 4, ".jpg") != 0) continue;
+
+        struct stat st;
+        char full[512];
+        snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
+        if (stat(full, &st) != 0) continue;
+        if (!S_ISREG(st.st_mode)) continue;
+
+        snprintf(entries[n].path, sizeof(entries[n].path), "%s", full);
+        entries[n].mtime = st.st_mtime;
+        n++;
+    }
+    closedir(d);
+
+    if (n <= max_count) {
+        free(entries);
+        return;
+    }
+
+    /* Sort oldest → newest */
+    qsort(entries, n, sizeof(PruneEntry), prune_cmp);
+
+    int to_delete = n - max_count;
+    for (int i = 0; i < to_delete; i++) {
+        if (unlink(entries[i].path) == 0) {
+            syslog(LOG_INFO, "snapshot: pruned %s", entries[i].path);
+        } else {
+            syslog(LOG_WARNING, "snapshot: prune unlink(%s): %s",
+                   entries[i].path, strerror(errno));
+        }
+    }
+
+    free(entries);
 }
 
 /* ── Capture ────────────────────────────────────────────────────────────── */
@@ -136,6 +209,10 @@ int snapshot_capture(const char *event_type,
 
     if (saved_path && saved_path_len > 0)
         snprintf(saved_path, saved_path_len, "%s", path);
+
+    /* Sprint 5 — prune oldest files if a max is configured */
+    if (cfg->max_count > 0)
+        snapshot_prune(dir, cfg->max_count);
 
     return 0;
 }

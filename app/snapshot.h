@@ -16,6 +16,7 @@ typedef struct {
     const char *save_dir;      /* absolute path; "" or NULL → auto-detect */
     int         on_activate;   /* capture when alert transitions → active */
     int         on_clear;      /* capture when alert transitions → cleared */
+    int         max_count;     /* max .jpg files to keep; 0 = unlimited (Sprint 5) */
 } SnapshotConfig;
 
 /*
@@ -45,5 +46,12 @@ int snapshot_capture(const char *event_type,
                      const SnapshotConfig *cfg,
                      char *saved_path,
                      size_t saved_path_len);
+
+/*
+ * Delete the oldest .jpg files in dir until at most max_count remain.
+ * Silently returns if max_count <= 0 or dir is NULL/empty.
+ * Called automatically by snapshot_capture when cfg->max_count > 0.
+ */
+void snapshot_prune(const char *dir, int max_count);
 
 #endif /* SNAPSHOT_H */

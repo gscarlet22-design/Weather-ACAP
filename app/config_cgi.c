@@ -32,6 +32,7 @@
 #include "snapshot.h"
 #include "mqtt.h"
 #include "email.h"
+#include "threshold.h"
 
 #include <fcgiapp.h>
 
@@ -125,6 +126,9 @@ static const FieldMap FIELDS[] = {
     { "EmailUser",     "email_user",      ""   },
     { "EmailPass",     "email_pass",      ""   },
     { "EmailOnClear",  "email_on_clear",  "no" },
+    /* Sprint 5 — threshold alerts + snapshot auto-delete */
+    { "ThresholdMap",     "threshold_map",      ""   },
+    { "SnapshotMaxCount", "snapshot_max_count", "50" },
     { NULL, NULL, NULL }
 };
 
@@ -1029,6 +1033,42 @@ static void endpoint_test_email(void) {
     out_printf("{\"ok\":%s}\n", rc == 0 ? "true" : "false");
 }
 
+/* ── Sprint 5: threshold list ───────────────────────────────────────────── */
+
+/* Return the parsed threshold rules as a JSON array so the UI can render
+ * the threshold table without having to parse the wire format itself. */
+static void endpoint_threshold_list(void) {
+    char *mapstr = cfg_get("ThresholdMap");
+
+    ThresholdMap tmap;
+    threshold_map_parse(mapstr, &tmap);
+    free(mapstr);
+
+    static const char *cond_names[] = {
+        "TempF", "WindMph", "HumidityPct", "WindDirDeg", "Unknown"
+    };
+    static const char *op_names[] = {
+        ">", "<", ">=", "<=", "?"
+    };
+
+    json_header();
+    out_puts("{\"ok\":true,\"rules\":[\n");
+    for (int i = 0; i < tmap.count; i++) {
+        const ThresholdRule *r = &tmap.rules[i];
+        int ci = (int)r->condition;
+        int oi = (int)r->op;
+        if (ci < 0 || ci > 4) ci = 4;
+        if (oi < 0 || oi > 4) oi = 4;
+        out_printf("  {\"condition\":\"%s\",\"op\":\"%s\",\"value\":%.4g,"
+                   "\"port\":%d,\"enabled\":%s,\"label\":\"",
+                   cond_names[ci], op_names[oi], r->value,
+                   r->port, r->enabled ? "true" : "false");
+        json_esc_out(r->label);
+        out_printf("\"}%s\n", (i + 1 < tmap.count) ? "," : "");
+    }
+    out_puts("]}\n");
+}
+
 /* ── Dispatcher ────────────────────────────────────────────────────────── */
 
 /* Read the POST body from the FastCGI input stream (not stdin). */
@@ -1100,6 +1140,7 @@ static void handle_request(void) {
     else if (strcmp(action, "capture_now")   == 0 && is_post) endpoint_capture_now();
     else if (strcmp(action, "test_mqtt")  == 0 && is_post) endpoint_test_mqtt();
     else if (strcmp(action, "test_email") == 0 && is_post) endpoint_test_email();
+    else if (strcmp(action, "threshold_list") == 0) endpoint_threshold_list();
     else {
         err_json("unknown action or wrong method");
     }

@@ -139,8 +139,11 @@
       $("f-snapshot-save-dir").value      = cfg.snapshot_save_dir || "";
       $("f-snapshot-on-activate").checked = (cfg.snapshot_on_activate || "yes").toLowerCase() === "yes";
       $("f-snapshot-on-clear").checked    = (cfg.snapshot_on_clear || "").toLowerCase() === "yes";
+      $("f-snapshot-max-count").value     = cfg.snapshot_max_count !== undefined ? cfg.snapshot_max_count : "50";
       /* Alert table */
       buildAlertTable(cfg.alert_map || "");
+      /* Threshold table (Sprint 5) */
+      buildThresholdTable(cfg.threshold_map || "");
     });
   }
 
@@ -156,6 +159,7 @@
       pairs.push(encField("nws_user_agent",   $("f-ua").value.trim()));
     } else if (section === "alerts") {
       pairs.push(encField("alert_map", serializeAlertMap()));
+      pairs.push(encField("threshold_map", serializeThresholdMap()));
     } else if (section === "overlay") {
       pairs.push(encField("overlay_enabled",        $("f-overlay-enabled").checked ? "yes" : "no"));
       pairs.push(encField("overlay_position",       $("f-overlay-position").value));
@@ -168,6 +172,7 @@
       pairs.push(encField("snapshot_save_dir",    $("f-snapshot-save-dir").value.trim()));
       pairs.push(encField("snapshot_on_activate", $("f-snapshot-on-activate").checked ? "yes" : "no"));
       pairs.push(encField("snapshot_on_clear",    $("f-snapshot-on-clear").checked ? "yes" : "no"));
+      pairs.push(encField("snapshot_max_count",   $("f-snapshot-max-count").value || "50"));
     } else if (section === "advanced") {
       pairs.push(encField("system_enabled",          $("f-system-enabled").checked ? "yes" : "no"));
       pairs.push(encField("vapix_user",              $("f-vapix-user").value.trim()));
@@ -201,6 +206,7 @@
 
   function initSaveButtons() {
     $$("[data-save]").forEach(function (btn) {
+      var originalText = btn.textContent;
       btn.addEventListener("click", function () {
         var section = btn.getAttribute("data-save");
         btn.disabled = true;
@@ -213,13 +219,7 @@
           .catch(function (e) { toast("Save failed: " + e.message, "error"); })
           .then(function () {
             btn.disabled = false;
-            btn.textContent = btn.textContent.replace("Saving\u2026", "");
-            /* re-label */
-            if (section === "location")   btn.textContent = "Save location settings";
-            if (section === "alerts")     btn.textContent = "Save alert mapping";
-            if (section === "overlay")    btn.textContent = "Save overlay settings";
-            if (section === "snapshots")  btn.textContent = "Save snapshot settings";
-            if (section === "advanced")   btn.textContent = "Save advanced settings";
+            btn.textContent = originalText;
             loadConfig(); /* refresh */
           });
       });
@@ -318,6 +318,126 @@
         tr.querySelector(".ar-port").value = start + i;
       });
       toast("Ports auto-assigned starting at " + start, "ok");
+    });
+  }
+
+  /* ── Threshold table (Sprint 5) ────────────────────────────────────────── */
+  var THRESH_CONDITIONS = ["TempF", "WindMph", "HumidityPct", "WindDirDeg"];
+  var THRESH_COND_LABELS = {
+    TempF:        "Temperature (\u00B0F)",
+    WindMph:      "Wind speed (mph)",
+    HumidityPct:  "Humidity (%)",
+    WindDirDeg:   "Wind dir (deg)"
+  };
+  var THRESH_OPS = [">", "<", ">=", "<="];
+
+  function parseThresholdMap(mapStr) {
+    if (!mapStr) return [];
+    return mapStr.split("|").filter(Boolean).map(function (seg) {
+      var p = seg.split(":");
+      if (p.length < 5) return null;
+      return {
+        condition: p[0],
+        op:        p[1],
+        value:     parseFloat(p[2]) || 0,
+        port:      parseInt(p[3], 10) || 1,
+        enabled:   p[4] !== "0"
+      };
+    }).filter(Boolean);
+  }
+
+  function serializeThresholdMap() {
+    var rows = [];
+    $$(".threshold-row").forEach(function (tr) {
+      var cond    = tr.querySelector(".tr-cond").value;
+      var op      = tr.querySelector(".tr-op").value;
+      var val     = tr.querySelector(".tr-val").value;
+      var port    = tr.querySelector(".tr-port").value;
+      var enabled = tr.querySelector(".tr-on").checked;
+      if (cond && op && val !== "" && port) {
+        rows.push(cond + ":" + op + ":" + val + ":" + port + ":" + (enabled ? "1" : "0"));
+      }
+    });
+    return rows.join("|");
+  }
+
+  function buildThresholdTable(mapStr) {
+    var rules = parseThresholdMap(mapStr);
+    var tbody = $("threshold-tbody");
+    tbody.innerHTML = "";
+    rules.forEach(function (r) {
+      addThresholdRow(r.condition, r.op, r.value, r.port, r.enabled);
+    });
+  }
+
+  function addThresholdRow(condition, op, value, port, enabled) {
+    var tbody = $("threshold-tbody");
+    var tr = document.createElement("tr");
+    tr.className = "threshold-row";
+
+    /* Condition dropdown */
+    var condOpts = THRESH_CONDITIONS.map(function (c) {
+      return '<option value="' + c + '"' + (c === condition ? " selected" : "") + '>' +
+             escHtml(THRESH_COND_LABELS[c] || c) + '</option>';
+    }).join("");
+
+    /* Operator dropdown */
+    var opOpts = THRESH_OPS.map(function (o) {
+      return '<option value="' + escHtml(o) + '"' + (o === op ? " selected" : "") + '>' +
+             escHtml(o) + '</option>';
+    }).join("");
+
+    tr.innerHTML =
+      '<td><input type="checkbox" class="tr-on"' + (enabled !== false ? " checked" : "") + '></td>' +
+      '<td><select class="tr-cond">' + condOpts + '</select></td>' +
+      '<td><select class="tr-op">' + opOpts + '</select></td>' +
+      '<td><input type="number" class="tr-val" value="' + (value !== undefined ? value : "") +
+           '" step="any" placeholder="e.g. 90" style="width:80px;"></td>' +
+      '<td><input type="number" class="tr-port" min="1" max="' + maxPorts + '" value="' + (port || 1) + '"></td>' +
+      '<td><button class="btn btn-ghost btn-small tr-test" type="button">Fire</button>' +
+           '<button class="btn btn-ghost btn-small tr-clear" type="button">Clear</button>' +
+           '<span class="row-test-result"></span></td>' +
+      '<td><button class="btn row-del" type="button" title="Remove">&times;</button></td>';
+    tbody.appendChild(tr);
+
+    tr.querySelector(".row-del").addEventListener("click", function () { tr.remove(); });
+
+    tr.querySelector(".tr-test").addEventListener("click", function () {
+      var p = tr.querySelector(".tr-port").value;
+      var res = tr.querySelector(".row-test-result");
+      res.textContent = "\u2026";
+      res.className = "row-test-result busy";
+      cgi("fire_port", { method: "POST", qs: "port=" + p, body: "" })
+        .then(function (r) {
+          res.textContent = r.ok ? "Fired " + p : "Err " + r.http_code;
+          res.className = "row-test-result " + (r.ok ? "ok" : "bad");
+        })
+        .catch(function () { res.textContent = "fail"; res.className = "row-test-result bad"; });
+    });
+
+    tr.querySelector(".tr-clear").addEventListener("click", function () {
+      var p = tr.querySelector(".tr-port").value;
+      var res = tr.querySelector(".row-test-result");
+      res.textContent = "\u2026";
+      res.className = "row-test-result busy";
+      cgi("clear_port", { method: "POST", qs: "port=" + p, body: "" })
+        .then(function (r) {
+          res.textContent = r.ok ? "Cleared " + p : "Err " + r.http_code;
+          res.className = "row-test-result " + (r.ok ? "ok" : "bad");
+        })
+        .catch(function () { res.textContent = "fail"; res.className = "row-test-result bad"; });
+    });
+  }
+
+  function initThresholdButtons() {
+    $("threshold-add").addEventListener("click", function () {
+      /* Find next unused port — prefer ports not used by alert table or other threshold rows */
+      var used = {};
+      $$(".ar-port").forEach(function (inp) { used[inp.value] = true; });
+      $$(".tr-port").forEach(function (inp) { used[inp.value] = true; });
+      var next = 10;
+      while (used[next] && next <= maxPorts) next++;
+      addThresholdRow("TempF", ">", "", next, true);
     });
   }
 
@@ -756,6 +876,7 @@
     initTabs();
     initSaveButtons();
     initAlertButtons();
+    initThresholdButtons();
     initOverlay();
     initSnapshots();
     initNotifications();
