@@ -114,6 +114,25 @@
       $("f-webhook-url").value         = cfg.webhook_url || "";
       $("f-webhook-alerts-only").checked = (cfg.webhook_on_alerts_only || "").toLowerCase() === "yes";
       $("f-mock-mode").checked         = (cfg.mock_mode || "").toLowerCase() === "yes";
+      /* MQTT */
+      $("f-mqtt-enabled").checked       = (cfg.mqtt_enabled || "").toLowerCase() === "yes";
+      $("f-mqtt-broker").value          = cfg.mqtt_broker_url || "";
+      $("f-mqtt-topic").value           = cfg.mqtt_topic || "weather/camera/alerts";
+      $("f-mqtt-user").value            = cfg.mqtt_user || "";
+      $("f-mqtt-pass").value            = "";
+      $("f-mqtt-pass").placeholder      = cfg.mqtt_pass === "__SET__" ? "(unchanged)" : "(not set)";
+      $("f-mqtt-on-alert-only").checked = (cfg.mqtt_on_alert_only !== undefined
+                                           ? cfg.mqtt_on_alert_only : "yes").toLowerCase() === "yes";
+      $("f-mqtt-retain").checked        = (cfg.mqtt_retain || "").toLowerCase() === "yes";
+      /* Email */
+      $("f-email-enabled").checked   = (cfg.email_enabled || "").toLowerCase() === "yes";
+      $("f-email-smtp").value        = cfg.email_smtp_url || "";
+      $("f-email-from").value        = cfg.email_from || "";
+      $("f-email-to").value          = cfg.email_to || "";
+      $("f-email-user").value        = cfg.email_user || "";
+      $("f-email-pass").value        = "";
+      $("f-email-pass").placeholder  = cfg.email_pass === "__SET__" ? "(unchanged)" : "(not set)";
+      $("f-email-on-clear").checked  = (cfg.email_on_clear || "").toLowerCase() === "yes";
       /* Snapshot */
       $("f-snapshot-enabled").checked     = (cfg.snapshot_enabled || "").toLowerCase() === "yes";
       $("f-snapshot-resolution").value    = cfg.snapshot_resolution || "1280x720";
@@ -157,7 +176,25 @@
       pairs.push(encField("webhook_enabled",         $("f-webhook-enabled").checked ? "yes" : "no"));
       pairs.push(encField("webhook_url",             $("f-webhook-url").value.trim()));
       pairs.push(encField("webhook_on_alerts_only",  $("f-webhook-alerts-only").checked ? "yes" : "no"));
-      pairs.push(encField("mock_mode",               $("f-mock-mode").checked ? "yes" : "no"));
+      /* MQTT */
+      pairs.push(encField("mqtt_enabled",       $("f-mqtt-enabled").checked ? "yes" : "no"));
+      pairs.push(encField("mqtt_broker_url",    $("f-mqtt-broker").value.trim()));
+      pairs.push(encField("mqtt_topic",         $("f-mqtt-topic").value.trim()));
+      pairs.push(encField("mqtt_user",          $("f-mqtt-user").value.trim()));
+      var mqpw = $("f-mqtt-pass").value;
+      pairs.push(encField("mqtt_pass",          mqpw || "__SET__"));
+      pairs.push(encField("mqtt_on_alert_only", $("f-mqtt-on-alert-only").checked ? "yes" : "no"));
+      pairs.push(encField("mqtt_retain",        $("f-mqtt-retain").checked ? "yes" : "no"));
+      /* Email */
+      pairs.push(encField("email_enabled",   $("f-email-enabled").checked ? "yes" : "no"));
+      pairs.push(encField("email_smtp_url",  $("f-email-smtp").value.trim()));
+      pairs.push(encField("email_from",      $("f-email-from").value.trim()));
+      pairs.push(encField("email_to",        $("f-email-to").value.trim()));
+      pairs.push(encField("email_user",      $("f-email-user").value.trim()));
+      var empw = $("f-email-pass").value;
+      pairs.push(encField("email_pass",      empw || "__SET__"));
+      pairs.push(encField("email_on_clear",  $("f-email-on-clear").checked ? "yes" : "no"));
+      pairs.push(encField("mock_mode",       $("f-mock-mode").checked ? "yes" : "no"));
     }
     return pairs.join("&");
   }
@@ -644,6 +681,53 @@
     $("snap-refresh-btn").addEventListener("click", refreshSnapshots);
   }
 
+  /* ── Notification tests (MQTT + Email) ─────────────────────────────────── */
+  function initNotifications() {
+    $("adv-test-mqtt").addEventListener("click", function () {
+      var res = $("adv-result-mqtt");
+      res.textContent = "Publishing\u2026";
+      res.className = "diag-result busy";
+      cgi("test_mqtt", { method: "POST", body: "" })
+        .then(function (r) {
+          if (r.ok) {
+            res.textContent = "Published successfully";
+            res.className = "diag-result ok";
+          } else {
+            res.textContent = r.error
+              ? "Failed: " + r.error
+              : "Failed \u2014 check syslog (broker unreachable or libcurl lacks MQTT support)";
+            res.className = "diag-result bad";
+          }
+        })
+        .catch(function (e) {
+          res.textContent = "Error: " + e.message;
+          res.className = "diag-result bad";
+        });
+    });
+
+    $("adv-test-email").addEventListener("click", function () {
+      var res = $("adv-result-email");
+      res.textContent = "Sending\u2026";
+      res.className = "diag-result busy";
+      cgi("test_email", { method: "POST", body: "" })
+        .then(function (r) {
+          if (r.ok) {
+            res.textContent = "Email sent successfully";
+            res.className = "diag-result ok";
+          } else {
+            res.textContent = r.error
+              ? "Failed: " + r.error
+              : "Failed \u2014 check syslog for SMTP error details";
+            res.className = "diag-result bad";
+          }
+        })
+        .catch(function (e) {
+          res.textContent = "Error: " + e.message;
+          res.className = "diag-result bad";
+        });
+    });
+  }
+
   /* ── Boot ────────────────────────────────────────────────────────────────── */
   function init() {
     initTabs();
@@ -651,6 +735,7 @@
     initAlertButtons();
     initOverlay();
     initSnapshots();
+    initNotifications();
     initDiagnostics();
     initDeviceRefresh();
     initExportImport();

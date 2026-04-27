@@ -92,6 +92,24 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     { "SnapshotOnActivate", "yes"      },
     { "SnapshotOnClear",    "no"       },
 
+    /* Sprint 3 — MQTT publishing */
+    { "MqttEnabled",       "no"  },
+    { "MqttBrokerUrl",     ""    },   /* mqtt://host:1883 */
+    { "MqttTopic",         "weather/camera/alerts" },
+    { "MqttUser",          ""    },
+    { "MqttPass",          ""    },
+    { "MqttOnAlertOnly",   "yes" },
+    { "MqttRetain",        "no"  },
+
+    /* Sprint 3 — Email notifications */
+    { "EmailEnabled",  "no"  },
+    { "EmailSmtpUrl",  ""    },   /* smtp://host:587 or smtps://host:465 */
+    { "EmailFrom",     ""    },
+    { "EmailTo",       ""    },
+    { "EmailUser",     ""    },
+    { "EmailPass",     ""    },
+    { "EmailOnClear",  "no"  },
+
     { NULL, NULL }
 };
 

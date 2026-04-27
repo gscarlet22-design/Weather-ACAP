@@ -13,6 +13,8 @@
 #include "history.h"
 #include "webhook.h"
 #include "snapshot.h"
+#include "mqtt.h"
+#include "email.h"
 
 #include <curl/curl.h>
 #include <glib.h>
@@ -60,6 +62,9 @@ typedef struct {
     const char *vapix_pass;
     /* Sprint 2 — snapshot on alert */
     SnapshotConfig snap_cfg;
+    /* Sprint 3 — MQTT + email */
+    MqttConfig  mqtt_cfg;
+    EmailConfig email_cfg;
 } TickCtx;
 
 static void on_alert_transition(const char *event, const char *headline,
@@ -70,6 +75,10 @@ static void on_alert_transition(const char *event, const char *headline,
     TickCtx *ctx = (TickCtx *)ud;
     if (!ctx) return;
 
+    /* Build event_type string used by multiple notification channels */
+    char event_type[64];
+    snprintf(event_type, sizeof(event_type), "alert_%s", action);
+
     /* Snapshot capture (Sprint 2) */
     snapshot_capture(event, action,
                      ctx->vapix_user, ctx->vapix_pass,
@@ -77,10 +86,20 @@ static void on_alert_transition(const char *event, const char *headline,
                      NULL, 0);
 
     /* Webhook */
-    if (ctx->webhook_enabled && ctx->webhook_url && *ctx->webhook_url) {
-        char event_type[64];
-        snprintf(event_type, sizeof(event_type), "alert_%s", action);
+    if (ctx->webhook_enabled && ctx->webhook_url && *ctx->webhook_url)
         webhook_post(ctx->webhook_url, ctx->snap, event_type, event);
+
+    /* MQTT publish (Sprint 3) */
+    if (ctx->mqtt_cfg.enabled)
+        mqtt_publish(&ctx->mqtt_cfg, ctx->snap, event_type, event);
+
+    /* Email notification (Sprint 3) — on_clear gate checked inside */
+    if (ctx->email_cfg.enabled) {
+        int should_send = 1;
+        if (strcmp(action, "cleared") == 0 && !ctx->email_cfg.on_clear)
+            should_send = 0;
+        if (should_send)
+            email_send(&ctx->email_cfg, event_type, event, ctx->snap);
     }
 }
 
@@ -180,6 +199,11 @@ static const char *CONFIG_PARAMS[] = {
     /* Sprint 2 — snapshot on alert */
     "SnapshotEnabled", "SnapshotResolution", "SnapshotSaveDir",
     "SnapshotOnActivate", "SnapshotOnClear",
+    /* Sprint 3 — MQTT + email */
+    "MqttEnabled", "MqttBrokerUrl", "MqttTopic",
+    "MqttUser", "MqttPass", "MqttOnAlertOnly", "MqttRetain",
+    "EmailEnabled", "EmailSmtpUrl", "EmailFrom",
+    "EmailTo", "EmailUser", "EmailPass", "EmailOnClear",
     NULL
 };
 
@@ -327,6 +351,22 @@ static gboolean do_poll(gpointer user_data) {
     char *sn_activate = params_get("SnapshotOnActivate");
     char *sn_clear    = params_get("SnapshotOnClear");
 
+    char *mq_enabled      = params_get("MqttEnabled");
+    char *mq_broker       = params_get("MqttBrokerUrl");
+    char *mq_topic        = params_get("MqttTopic");
+    char *mq_user         = params_get("MqttUser");
+    char *mq_pass         = params_get("MqttPass");
+    char *mq_alerts_only  = params_get("MqttOnAlertOnly");
+    char *mq_retain       = params_get("MqttRetain");
+
+    char *em_enabled  = params_get("EmailEnabled");
+    char *em_smtp     = params_get("EmailSmtpUrl");
+    char *em_from     = params_get("EmailFrom");
+    char *em_to       = params_get("EmailTo");
+    char *em_user     = params_get("EmailUser");
+    char *em_pass     = params_get("EmailPass");
+    char *em_on_clear = params_get("EmailOnClear");
+
     int is_mock = mock && strcasecmp(mock, "yes") == 0;
 
     WeatherSnapshot snap;
@@ -381,6 +421,24 @@ static gboolean do_poll(gpointer user_data) {
                 .on_activate = !sn_activate || strcasecmp(sn_activate, "yes") == 0,
                 .on_clear    = sn_clear    && strcasecmp(sn_clear,    "yes") == 0,
             },
+            .mqtt_cfg = {
+                .enabled      = mq_enabled && strcasecmp(mq_enabled, "yes") == 0,
+                .broker_url   = mq_broker,
+                .topic        = mq_topic,
+                .username     = mq_user,
+                .password     = mq_pass,
+                .on_alert_only= !mq_alerts_only || strcasecmp(mq_alerts_only, "yes") == 0,
+                .retain       = mq_retain && strcasecmp(mq_retain, "yes") == 0,
+            },
+            .email_cfg = {
+                .enabled   = em_enabled && strcasecmp(em_enabled, "yes") == 0,
+                .smtp_url  = em_smtp,
+                .from      = em_from,
+                .to        = em_to,
+                .username  = em_user,
+                .password  = em_pass,
+                .on_clear  = em_on_clear && strcasecmp(em_on_clear, "yes") == 0,
+            },
         };
 
         /* Fire/clear virtual input ports */
@@ -406,6 +464,12 @@ static gboolean do_poll(gpointer user_data) {
                snap.conditions.description,
                snap.conditions.wind_speed_mph,
                snap.alerts.count);
+
+        /* MQTT: also publish current conditions on every poll when
+         * on_alert_only = no.  Alert-triggered publishes happen via
+         * on_alert_transition above. */
+        if (ctx.mqtt_cfg.enabled && !ctx.mqtt_cfg.on_alert_only)
+            mqtt_publish(&ctx.mqtt_cfg, &snap, "poll", "");
     }
 
     /* Status file */
@@ -421,6 +485,10 @@ static gboolean do_poll(gpointer user_data) {
     free(wh_enabled); free(wh_url); free(wh_alerts);
     free(sn_enabled); free(sn_res); free(sn_dir);
     free(sn_activate); free(sn_clear);
+    free(mq_enabled); free(mq_broker); free(mq_topic);
+    free(mq_user); free(mq_pass); free(mq_alerts_only); free(mq_retain);
+    free(em_enabled); free(em_smtp); free(em_from);
+    free(em_to); free(em_user); free(em_pass); free(em_on_clear);
 
     return G_SOURCE_CONTINUE;
 }

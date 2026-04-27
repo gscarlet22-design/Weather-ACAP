@@ -433,6 +433,104 @@
 
       <div class="card">
         <div class="card-header">
+          <h2>MQTT publishing</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-mqtt-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>Publish JSON weather and alert payloads to an MQTT broker. Requires libcurl built with MQTT support (available on AXIS OS 12+).</small>
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-mqtt-broker">Broker URL</label>
+              <input id="f-mqtt-broker" type="text" placeholder="mqtt://192.168.1.100:1883">
+              <small>Scheme + host + port only &mdash; no trailing slash.</small>
+            </div>
+            <div class="form-row">
+              <label for="f-mqtt-topic">Topic</label>
+              <input id="f-mqtt-topic" type="text" placeholder="weather/camera/alerts">
+            </div>
+          </div>
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-mqtt-user">Username <small class="opt">(optional)</small></label>
+              <input id="f-mqtt-user" type="text" autocomplete="username">
+            </div>
+            <div class="form-row">
+              <label for="f-mqtt-pass">Password <small class="opt">(optional)</small></label>
+              <input id="f-mqtt-pass" type="password" autocomplete="new-password" placeholder="(unchanged)">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="checkbox-group">
+              <label class="checkbox">
+                <input id="f-mqtt-on-alert-only" type="checkbox">
+                <span>Publish only on alert transitions (skip routine polls)</span>
+              </label>
+              <label class="checkbox" style="margin-top:0.4rem;">
+                <input id="f-mqtt-retain" type="checkbox">
+                <span>Set MQTT retain flag on published messages</span>
+              </label>
+            </div>
+          </div>
+          <div class="diag-row" style="margin-top:0.8rem;">
+            <button class="btn btn-ghost" id="adv-test-mqtt" type="button">Send test publish</button>
+            <div id="adv-result-mqtt" class="diag-result">&mdash;</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Email notifications</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-email-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>Send an email when an alert activates (and optionally clears). Uses your SMTP relay; TLS/STARTTLS is attempted automatically.</small>
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-email-smtp">SMTP URL</label>
+              <input id="f-email-smtp" type="text" placeholder="smtp://mailhost:587">
+              <small>Use <code>smtp://</code> for plain/STARTTLS or <code>smtps://</code> for implicit TLS.</small>
+            </div>
+            <div class="form-row" style="align-self:end;">
+              <label for="f-email-from">From address</label>
+              <input id="f-email-from" type="email" placeholder="weather@camera.local">
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="f-email-to">To address</label>
+            <input id="f-email-to" type="email" placeholder="ops@example.com">
+          </div>
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-email-user">SMTP username <small class="opt">(optional)</small></label>
+              <input id="f-email-user" type="text" autocomplete="username">
+            </div>
+            <div class="form-row">
+              <label for="f-email-pass">SMTP password <small class="opt">(optional)</small></label>
+              <input id="f-email-pass" type="password" autocomplete="new-password" placeholder="(unchanged)">
+            </div>
+          </div>
+          <div class="form-row">
+            <label class="checkbox">
+              <input id="f-email-on-clear" type="checkbox">
+              <span>Also send when an alert clears</span>
+            </label>
+          </div>
+          <div class="diag-row" style="margin-top:0.8rem;">
+            <button class="btn btn-ghost" id="adv-test-email" type="button">Send test email</button>
+            <div id="adv-result-email" class="diag-result">&mdash;</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
           <h2>Mock mode</h2>
           <label class="switch">
             <input type="checkbox" id="f-mock-mode">

@@ -19,6 +19,8 @@ set(SHARED_SRCS
     overlay.c
     webhook.c
     snapshot.c
+    mqtt.c
+    email.c
 )
 
 # ── Main daemon ──────────────────────────────────────────────────────────
