@@ -870,6 +870,35 @@ static void endpoint_test_snapshot(void) {
     free(u); free(p); free(res); free(dir_cfg);
 }
 
+/* On-demand capture — bypasses SnapshotEnabled, no VAPIX probe diagnostics.
+ * Intended for the gallery "Capture now" button; use test_snapshot when
+ * you need the fail_step diagnostic (dir / auth / connect). */
+static void endpoint_capture_now(void) {
+    char *u       = cfg_get("VapixUser");
+    char *p       = cfg_get("VapixPass");
+    char *res     = cfg_get("SnapshotResolution");
+    char *dir_cfg = cfg_get("SnapshotSaveDir");
+
+    SnapshotConfig cfg = {
+        .enabled     = 1,   /* always capture regardless of SnapshotEnabled param */
+        .resolution  = res,
+        .save_dir    = dir_cfg,
+        .on_activate = 1,
+        .on_clear    = 0,
+    };
+
+    char saved[512] = "";
+    int  rc = snapshot_capture("Manual", "activated",
+                               u, p, &cfg, saved, sizeof(saved));
+
+    json_header();
+    out_printf("{\"ok\":%s,\"path\":\"", rc == 0 ? "true" : "false");
+    json_esc_out(saved);
+    out_puts("\"}\n");
+
+    free(u); free(p); free(res); free(dir_cfg);
+}
+
 static void endpoint_export(void) {
     out_puts("Content-Type: application/json\r\n"
              "Content-Disposition: attachment; filename=\"weather_acap_config.json\"\r\n\r\n");
@@ -1068,6 +1097,7 @@ static void handle_request(void) {
     else if (strcmp(action, "snapshot_list") == 0)  endpoint_snapshot_list();
     else if (strcmp(action, "snapshot_image") == 0) endpoint_snapshot_image(qs);
     else if (strcmp(action, "test_snapshot") == 0 && is_post) endpoint_test_snapshot();
+    else if (strcmp(action, "capture_now")   == 0 && is_post) endpoint_capture_now();
     else if (strcmp(action, "test_mqtt")  == 0 && is_post) endpoint_test_mqtt();
     else if (strcmp(action, "test_email") == 0 && is_post) endpoint_test_email();
     else {

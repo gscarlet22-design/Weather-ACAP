@@ -651,22 +651,45 @@
   }
 
   function initSnapshots() {
+    /* "Capture now" — clean on-demand capture, no diagnostic probe */
+    $("snap-capture-btn").addEventListener("click", function () {
+      var res = $("snap-capture-result");
+      res.textContent = "Capturing\u2026";
+      res.className = "diag-result busy";
+      cgi("capture_now", { method: "POST", body: "" })
+        .then(function (r) {
+          if (r.ok) {
+            res.textContent = "Saved \u2713";
+            res.className = "diag-result ok";
+            refreshSnapshots();
+          } else {
+            res.textContent = "Failed \u2014 check credentials, or use \u201cTest & diagnose\u201d for details.";
+            res.className = "diag-result bad";
+          }
+        })
+        .catch(function (e) {
+          res.textContent = "Error: " + e.message;
+          res.className = "diag-result bad";
+        });
+    });
+
+    /* "Test & diagnose" — attempts capture + VAPIX probe for detailed error */
     $("snap-test-btn").addEventListener("click", function () {
       var res = $("snap-test-result");
-      res.textContent = "Capturing\u2026";
+      res.textContent = "Testing\u2026";
       res.className = "diag-result busy";
       cgi("test_snapshot", { method: "POST", body: "" })
         .then(function (r) {
           if (r.ok) {
-            res.textContent = "Saved: " + (r.path || r.save_dir || "unknown path");
+            res.textContent = "OK \u2014 saved: " + (r.path || r.save_dir || "?");
             res.className = "diag-result ok";
             refreshSnapshots();
           } else {
             var msgs = {
-              "dir":     "Directory error — VAPIX responded (HTTP " + r.probe_http + ") but the save directory couldn\u2019t be created. Check syslog for mkdir errors.",
+              "dir":     "Directory error \u2014 VAPIX responded (HTTP " + r.probe_http + ") but the save directory couldn\u2019t be created. Check syslog for mkdir errors.",
               "auth":    "VAPIX auth failed (HTTP " + r.probe_http + "). Verify VAPIX username and password in the Advanced tab.",
               "connect": "Cannot reach camera VAPIX at localhost. Is the daemon running?",
-              "":        "Capture failed — check syslog for details."
+              "":        "Capture failed \u2014 check syslog for details."
             };
             res.textContent = msgs[r.fail_step || ""] || msgs[""];
             res.className = "diag-result bad";
