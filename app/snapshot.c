@@ -2,10 +2,15 @@
  * snapshot.c — JPEG capture on alert transition
  *
  * Calls VAPIX /axis-cgi/jpg/image.cgi via vapix_snapshot_to_file() and
- * saves the result to the best available local directory:
+ * saves the result to the best available local directory.
  *
- *   1. /var/spool/storage/SD_DISK/weather_acap/  (SD card, persistent)
- *   2. /tmp/weather_acap_snaps/                  (RAM, cleared on reboot)
+ * Directory priority (auto-detect, no SnapshotSaveDir configured):
+ *   1. /var/spool/storage/SD_DISK/weather_acap/  (SD card — only if writable)
+ *   2. /usr/local/packages/weather_acap/localdata/snapshots/  (always writable)
+ *
+ * The SD card check actually tries to create the subdirectory — stat alone is
+ * not enough because the ACAP sandbox user can see the SD card mount point but
+ * may not have write access without a manifest storage declaration.
  *
  * Filename format: YYYYMMDD_HHMMSS_<sanitized_alert_type>.jpg
  * e.g.: 20260427_142537_Tornado_Warning.jpg
@@ -26,16 +31,7 @@
 
 /* ── Save-directory helpers ─────────────────────────────────────────────── */
 
-const char *snapshot_find_save_dir(void) {
-    static char dir[256];
-    struct stat st;
-    if (stat("/var/spool/storage/SD_DISK", &st) == 0 && S_ISDIR(st.st_mode))
-        snprintf(dir, sizeof(dir), "/var/spool/storage/SD_DISK/weather_acap");
-    else
-        snprintf(dir, sizeof(dir), "/tmp/weather_acap_snaps");
-    return dir;
-}
-
+/* Returns 0 if path exists as a directory or was successfully created. */
 static int ensure_dir(const char *path) {
     struct stat st;
     if (stat(path, &st) == 0)
@@ -45,6 +41,29 @@ static int ensure_dir(const char *path) {
         return -1;
     }
     return 0;
+}
+
+const char *snapshot_find_save_dir(void) {
+    static char dir[256];
+
+    /* Try SD card — only use it if we can actually create our subdirectory.
+     * stat() alone isn't sufficient: the ACAP sandbox can see the SD card
+     * mount point but write access requires a manifest storage entry.
+     * Attempting mkdir() is the only reliable test. */
+    struct stat st;
+    if (stat("/var/spool/storage/SD_DISK", &st) == 0 && S_ISDIR(st.st_mode)) {
+        snprintf(dir, sizeof(dir), "/var/spool/storage/SD_DISK/weather_acap");
+        if (ensure_dir(dir) == 0)
+            return dir;
+        syslog(LOG_INFO,
+               "snapshot: SD card not writable — falling back to localdata");
+    }
+
+    /* App-owned localdata directory: always writable without extra manifest
+     * declarations.  Persistent across reboots (unlike /tmp). */
+    snprintf(dir, sizeof(dir),
+             "/usr/local/packages/weather_acap/localdata/snapshots");
+    return dir;
 }
 
 /* Replace every non-alphanumeric character with '_', max 48 output chars. */

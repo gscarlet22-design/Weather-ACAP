@@ -625,7 +625,13 @@
             res.className = "diag-result ok";
             refreshSnapshots();
           } else {
-            res.textContent = "Capture failed. Check VAPIX credentials and that the camera has video.";
+            var msgs = {
+              "dir":     "Directory error — VAPIX responded (HTTP " + r.probe_http + ") but the save directory couldn\u2019t be created. Check syslog for mkdir errors.",
+              "auth":    "VAPIX auth failed (HTTP " + r.probe_http + "). Verify VAPIX username and password in the Advanced tab.",
+              "connect": "Cannot reach camera VAPIX at localhost. Is the daemon running?",
+              "":        "Capture failed — check syslog for details."
+            };
+            res.textContent = msgs[r.fail_step || ""] || msgs[""];
             res.className = "diag-result bad";
           }
         })

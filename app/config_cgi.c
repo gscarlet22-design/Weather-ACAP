@@ -776,33 +776,55 @@ static void endpoint_snapshot_image(const char *qs) {
 }
 
 static void endpoint_test_snapshot(void) {
-    char *u   = cfg_get("VapixUser");
-    char *p   = cfg_get("VapixPass");
-    char *res = cfg_get("SnapshotResolution");
-    char *dir = cfg_get("SnapshotSaveDir");
+    char *u       = cfg_get("VapixUser");
+    char *p       = cfg_get("VapixPass");
+    char *res     = cfg_get("SnapshotResolution");
+    char *dir_cfg = cfg_get("SnapshotSaveDir");
 
     SnapshotConfig cfg = {
         .enabled     = 1,
         .resolution  = res,
-        .save_dir    = dir,
+        .save_dir    = dir_cfg,
         .on_activate = 1,
         .on_clear    = 0,
     };
 
     char saved[512] = "";
-    int  rc = snapshot_capture("Test Snapshot", "activated",
+    int  rc = snapshot_capture("Test_Snapshot", "activated",
                                u, p, &cfg, saved, sizeof(saved));
 
+    /* If capture failed, probe VAPIX independently to distinguish:
+     *   "dir"     — VAPIX responded (HTTP 200) but dir creation/write failed
+     *   "auth"    — VAPIX returned non-200 (bad credentials or missing endpoint)
+     *   "connect" — couldn't reach localhost VAPIX at all
+     *   ""        — success */
+    const char *fail_step = "";
+    long probe_code = 0;
+    if (rc != 0) {
+        /* Use param.cgi (text, small response) rather than image.cgi (binary, large) */
+        char *probe = vapix_get(
+            "/axis-cgi/param.cgi?action=list&group=root.Brand",
+            u, p, &probe_code);
+        if (probe) {
+            fail_step = (probe_code == 200) ? "dir" : "auth";
+            free(probe);
+        } else {
+            fail_step = "connect";
+        }
+    }
+
+    const char *used_dir = (dir_cfg && *dir_cfg) ? dir_cfg : snapshot_find_save_dir();
+
     json_header();
-    out_printf("{\"ok\":%s,\"path\":\"",
-               rc == 0 ? "true" : "false");
+    out_printf("{\"ok\":%s,\"path\":\"", rc == 0 ? "true" : "false");
     json_esc_out(saved);
     out_puts("\",\"save_dir\":\"");
-    const char *used_dir = (dir && *dir) ? dir : snapshot_find_save_dir();
     json_esc_out(used_dir);
+    out_printf("\",\"probe_http\":%ld,\"fail_step\":\"", probe_code);
+    json_esc_out(fail_step);
     out_puts("\"}\n");
 
-    free(u); free(p); free(res); free(dir);
+    free(u); free(p); free(res); free(dir_cfg);
 }
 
 static void endpoint_export(void) {

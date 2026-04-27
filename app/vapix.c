@@ -170,13 +170,24 @@ int vapix_snapshot_to_file(const char *path,
 
     CURLcode rc = curl_easy_perform(curl);
 
-    /* Capture Content-Type before cleanup */
+    /* Read response metadata before freeing the curl handle */
     char *ct = NULL;
     curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct);
-    int is_jpeg = (ct && strstr(ct, "image/jpeg") != NULL);
-
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    /* Log CT now — ct pointer is owned by curl and invalid after cleanup */
+    syslog(LOG_INFO, "vapix: snapshot HTTP %ld content-type=%s",
+           http_code, ct ? ct : "(none)");
+
+    /* Reject explicitly if the response is an error document.
+     * Do NOT reject on NULL or unknown content-type — some cameras omit
+     * the Content-Type header on image responses and CURLINFO_CONTENT_TYPE
+     * returns NULL even on a valid JPEG body.  Trust HTTP 200 for those. */
+    int is_error_body = ct &&
+        (strstr(ct, "text/html")       != NULL ||
+         strstr(ct, "application/json") != NULL ||
+         strstr(ct, "text/plain")       != NULL);
+
     curl_easy_cleanup(curl);
     fclose(f);
 
@@ -188,13 +199,13 @@ int vapix_snapshot_to_file(const char *path,
         return -1;
     }
     if (http_code != 200) {
-        syslog(LOG_WARNING, "vapix: snapshot HTTP %ld (not 200)", http_code);
+        syslog(LOG_WARNING, "vapix: snapshot HTTP %ld (expected 200)", http_code);
         unlink(path);
         return -1;
     }
-    if (!is_jpeg) {
-        syslog(LOG_WARNING, "vapix: snapshot unexpected content-type: %s",
-               ct ? ct : "(null)");
+    if (is_error_body) {
+        syslog(LOG_WARNING,
+               "vapix: snapshot rejected error body (content-type: %s)", ct);
         unlink(path);
         return -1;
     }
