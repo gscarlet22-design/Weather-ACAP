@@ -29,15 +29,19 @@
 #include "alerts.h"
 #include "overlay.h"
 #include "webhook.h"
+#include "snapshot.h"
 
 #include <fcgiapp.h>
 
+#include <ctype.h>
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <syslog.h>
 
@@ -97,6 +101,12 @@ static const FieldMap FIELDS[] = {
     { "VapixUser",            "vapix_user",            "root" },
     { "VapixPass",            "vapix_pass",            "" },
     { "MockMode",             "mock_mode",             "no" },
+    /* Sprint 2 — snapshot on alert */
+    { "SnapshotEnabled",    "snapshot_enabled",    "no"       },
+    { "SnapshotResolution", "snapshot_resolution", "1280x720" },
+    { "SnapshotSaveDir",    "snapshot_save_dir",   ""         },
+    { "SnapshotOnActivate", "snapshot_on_activate","yes"      },
+    { "SnapshotOnClear",    "snapshot_on_clear",   "no"       },
     { NULL, NULL, NULL }
 };
 
@@ -658,6 +668,186 @@ static void endpoint_test_webhook(void) {
                (code >= 200 && code < 300) ? "true" : "false", code);
 }
 
+/* ── Snapshot endpoints ─────────────────────────────────────────────────── */
+
+/* Validate a snapshot filename — must be [A-Za-z0-9_\-.] only, end in .jpg,
+ * contain no '..' or '/', and be at least 5 chars long. */
+static int is_safe_snap_filename(const char *name) {
+    if (!name || !*name) return 0;
+    size_t n = strlen(name);
+    if (n < 5 || n > 200) return 0;
+    if (strcmp(name + n - 4, ".jpg") != 0) return 0;
+    for (const char *p = name; *p; p++) {
+        char c = *p;
+        if (!isalnum((unsigned char)c) && c != '_' && c != '-' && c != '.') return 0;
+    }
+    /* Also rule out anything with ".." */
+    if (strstr(name, "..")) return 0;
+    return 1;
+}
+
+#define MAX_SNAP_LIST 50
+
+typedef struct { char name[256]; time_t mtime; off_t size; } SnapEntry;
+
+static int snap_mtime_cmp(const void *a, const void *b) {
+    /* Newest first */
+    time_t ta = ((const SnapEntry *)a)->mtime;
+    time_t tb = ((const SnapEntry *)b)->mtime;
+    if (tb > ta) return  1;
+    if (tb < ta) return -1;
+    return 0;
+}
+
+static void endpoint_snapshot_list(void) {
+    char *save_dir_cfg = cfg_get("SnapshotSaveDir");
+    const char *dir = (save_dir_cfg && *save_dir_cfg)
+                      ? save_dir_cfg
+                      : snapshot_find_save_dir();
+
+    SnapEntry entries[MAX_SNAP_LIST];
+    int count = 0;
+
+    DIR *dp = opendir(dir);
+    if (dp) {
+        struct dirent *ent;
+        while ((ent = readdir(dp)) != NULL && count < MAX_SNAP_LIST) {
+            const char *fname = ent->d_name;
+            size_t flen = strlen(fname);
+            if (flen < 5 || strcmp(fname + flen - 4, ".jpg") != 0) continue;
+
+            char path[512];
+            snprintf(path, sizeof(path), "%s/%s", dir, fname);
+            struct stat st;
+            if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+
+            snprintf(entries[count].name, sizeof(entries[count].name), "%s", fname);
+            entries[count].mtime = st.st_mtime;
+            entries[count].size  = st.st_size;
+            count++;
+        }
+        closedir(dp);
+    }
+
+    qsort(entries, count, sizeof(SnapEntry), snap_mtime_cmp);
+
+    json_header();
+    out_puts("{\"ok\":true,\"save_dir\":\"");
+    json_esc_out(dir);
+    out_printf("\",\"count\":%d,\"snapshots\":[", count);
+
+    for (int i = 0; i < count; i++) {
+        char ts[32];
+        struct tm *utc = gmtime(&entries[i].mtime);
+        strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", utc);
+
+        if (i > 0) out_puts(",");
+        out_puts("{\"filename\":\"");
+        json_esc_out(entries[i].name);
+        out_printf("\",\"ts\":\"%s\",\"size\":%ld}", ts, (long)entries[i].size);
+    }
+
+    out_puts("]}\n");
+    free(save_dir_cfg);
+}
+
+static void endpoint_snapshot_image(const char *qs) {
+    KV kv[8] = {0};
+    int n = parse_kv(qs, kv, 8);
+    const char *file = get_kv(kv, n, "file");
+
+    if (!is_safe_snap_filename(file)) {
+        free_kv(kv, n);
+        err_json("invalid or missing file parameter");
+        return;
+    }
+
+    char *save_dir_cfg = cfg_get("SnapshotSaveDir");
+    const char *dir = (save_dir_cfg && *save_dir_cfg)
+                      ? save_dir_cfg
+                      : snapshot_find_save_dir();
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", dir, file);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        free_kv(kv, n);
+        free(save_dir_cfg);
+        err_json("snapshot not found");
+        return;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    rewind(f);
+
+    out_printf("Content-Type: image/jpeg\r\n"
+               "Content-Length: %ld\r\n"
+               "Cache-Control: max-age=86400\r\n\r\n", sz);
+
+    char buf[4096];
+    size_t nr;
+    while ((nr = fread(buf, 1, sizeof(buf), f)) > 0)
+        FCGX_PutStr(buf, (int)nr, g_req.out);
+
+    fclose(f);
+    free_kv(kv, n);
+    free(save_dir_cfg);
+}
+
+static void endpoint_test_snapshot(void) {
+    char *u       = cfg_get("VapixUser");
+    char *p       = cfg_get("VapixPass");
+    char *res     = cfg_get("SnapshotResolution");
+    char *dir_cfg = cfg_get("SnapshotSaveDir");
+
+    SnapshotConfig cfg = {
+        .enabled     = 1,
+        .resolution  = res,
+        .save_dir    = dir_cfg,
+        .on_activate = 1,
+        .on_clear    = 0,
+    };
+
+    char saved[512] = "";
+    int  rc = snapshot_capture("Test_Snapshot", "activated",
+                               u, p, &cfg, saved, sizeof(saved));
+
+    /* If capture failed, probe VAPIX independently to distinguish:
+     *   "dir"     — VAPIX responded (HTTP 200) but dir creation/write failed
+     *   "auth"    — VAPIX returned non-200 (bad credentials or missing endpoint)
+     *   "connect" — couldn't reach localhost VAPIX at all
+     *   ""        — success */
+    const char *fail_step = "";
+    long probe_code = 0;
+    if (rc != 0) {
+        /* Use param.cgi (text, small response) rather than image.cgi (binary, large) */
+        char *probe = vapix_get(
+            "/axis-cgi/param.cgi?action=list&group=root.Brand",
+            u, p, &probe_code);
+        if (probe) {
+            fail_step = (probe_code == 200) ? "dir" : "auth";
+            free(probe);
+        } else {
+            fail_step = "connect";
+        }
+    }
+
+    const char *used_dir = (dir_cfg && *dir_cfg) ? dir_cfg : snapshot_find_save_dir();
+
+    json_header();
+    out_printf("{\"ok\":%s,\"path\":\"", rc == 0 ? "true" : "false");
+    json_esc_out(saved);
+    out_puts("\",\"save_dir\":\"");
+    json_esc_out(used_dir);
+    out_printf("\",\"probe_http\":%ld,\"fail_step\":\"", probe_code);
+    json_esc_out(fail_step);
+    out_puts("\"}\n");
+
+    free(u); free(p); free(res); free(dir_cfg);
+}
+
 static void endpoint_export(void) {
     out_puts("Content-Type: application/json\r\n"
              "Content-Disposition: attachment; filename=\"weather_acap_config.json\"\r\n\r\n");
@@ -766,6 +956,9 @@ static void handle_request(void) {
         endpoint_import(body ? body : "");
         free(body);
     }
+    else if (strcmp(action, "snapshot_list") == 0)  endpoint_snapshot_list();
+    else if (strcmp(action, "snapshot_image") == 0) endpoint_snapshot_image(qs);
+    else if (strcmp(action, "test_snapshot") == 0 && is_post) endpoint_test_snapshot();
     else {
         err_json("unknown action or wrong method");
     }

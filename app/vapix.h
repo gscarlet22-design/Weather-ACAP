@@ -29,4 +29,20 @@ int vapix_has_video(const char *user, const char *pass);
  * Returns NULL on failure. */
 char *vapix_device_info(const char *user, const char *pass);
 
+/* Capture a JPEG snapshot via /axis-cgi/jpg/image.cgi and write it to a file.
+ *
+ * path          — absolute path to write the .jpg (created/overwritten)
+ * resolution    — e.g. "1280x720"; NULL → camera default
+ * user/pass     — Digest credentials
+ * http_code_out — if non-NULL, filled with the HTTP response code
+ *
+ * Returns 0 on success, -1 on error (partial file is removed on error).
+ * Error is also logged to syslog(LOG_WARNING).
+ */
+int vapix_snapshot_to_file(const char *path,
+                           const char *resolution,
+                           const char *user,
+                           const char *pass,
+                           long *http_code_out);
+
 #endif /* VAPIX_H */

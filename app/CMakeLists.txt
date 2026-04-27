@@ -18,6 +18,7 @@ set(SHARED_SRCS
     alerts.c
     overlay.c
     webhook.c
+    snapshot.c
 )
 
 # ── Main daemon ──────────────────────────────────────────────────────────

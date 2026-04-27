@@ -12,6 +12,7 @@
 #include "overlay.h"
 #include "history.h"
 #include "webhook.h"
+#include "snapshot.h"
 
 #include <curl/curl.h>
 #include <glib.h>
@@ -54,6 +55,11 @@ typedef struct {
     int   webhook_enabled;
     const char *webhook_url;
     int   webhook_on_alerts_only;
+    /* VAPIX credentials — needed by snapshot_capture */
+    const char *vapix_user;
+    const char *vapix_pass;
+    /* Sprint 2 — snapshot on alert */
+    SnapshotConfig snap_cfg;
 } TickCtx;
 
 static void on_alert_transition(const char *event, const char *headline,
@@ -62,7 +68,16 @@ static void on_alert_transition(const char *event, const char *headline,
     history_append(event, headline, action);
 
     TickCtx *ctx = (TickCtx *)ud;
-    if (ctx && ctx->webhook_enabled && ctx->webhook_url && *ctx->webhook_url) {
+    if (!ctx) return;
+
+    /* Snapshot capture (Sprint 2) */
+    snapshot_capture(event, action,
+                     ctx->vapix_user, ctx->vapix_pass,
+                     &ctx->snap_cfg,
+                     NULL, 0);
+
+    /* Webhook */
+    if (ctx->webhook_enabled && ctx->webhook_url && *ctx->webhook_url) {
         char event_type[64];
         snprintf(event_type, sizeof(event_type), "alert_%s", action);
         webhook_post(ctx->webhook_url, ctx->snap, event_type, event);
@@ -161,7 +176,11 @@ static const char *CONFIG_PARAMS[] = {
     "OverlayEnabled", "OverlayPosition", "OverlayTemplate",
     "OverlayAlertTemplate", "OverlayMaxAlerts",
     "WebhookEnabled", "WebhookUrl", "WebhookOnAlertsOnly",
-    "VapixUser", "VapixPass", "MockMode", NULL
+    "VapixUser", "VapixPass", "MockMode",
+    /* Sprint 2 — snapshot on alert */
+    "SnapshotEnabled", "SnapshotResolution", "SnapshotSaveDir",
+    "SnapshotOnActivate", "SnapshotOnClear",
+    NULL
 };
 
 static void write_config_file(void) {
@@ -302,6 +321,12 @@ static gboolean do_poll(gpointer user_data) {
     char *wh_url     = params_get("WebhookUrl");
     char *wh_alerts  = params_get("WebhookOnAlertsOnly");
 
+    char *sn_enabled  = params_get("SnapshotEnabled");
+    char *sn_res      = params_get("SnapshotResolution");
+    char *sn_dir      = params_get("SnapshotSaveDir");
+    char *sn_activate = params_get("SnapshotOnActivate");
+    char *sn_clear    = params_get("SnapshotOnClear");
+
     int is_mock = mock && strcasecmp(mock, "yes") == 0;
 
     WeatherSnapshot snap;
@@ -347,6 +372,15 @@ static gboolean do_poll(gpointer user_data) {
             .webhook_enabled         = wh_enabled && strcasecmp(wh_enabled, "yes") == 0,
             .webhook_url             = wh_url,
             .webhook_on_alerts_only  = wh_alerts && strcasecmp(wh_alerts, "yes") == 0,
+            .vapix_user              = vuser,
+            .vapix_pass              = vpass,
+            .snap_cfg = {
+                .enabled     = sn_enabled  && strcasecmp(sn_enabled,  "yes") == 0,
+                .resolution  = sn_res,
+                .save_dir    = sn_dir,
+                .on_activate = !sn_activate || strcasecmp(sn_activate, "yes") == 0,
+                .on_clear    = sn_clear    && strcasecmp(sn_clear,    "yes") == 0,
+            },
         };
 
         /* Fire/clear virtual input ports */
@@ -385,6 +419,8 @@ static gboolean do_poll(gpointer user_data) {
     free(ua); free(alertmap); free(vuser); free(vpass); free(mock);
     free(ov_enabled); free(ov_pos); free(ov_tmpl); free(ov_atmpl);
     free(wh_enabled); free(wh_url); free(wh_alerts);
+    free(sn_enabled); free(sn_res); free(sn_dir);
+    free(sn_activate); free(sn_clear);
 
     return G_SOURCE_CONTINUE;
 }

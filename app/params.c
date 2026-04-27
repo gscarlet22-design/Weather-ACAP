@@ -85,6 +85,13 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     /* Testing */
     { "MockMode",   "no" },
 
+    /* Snapshot on alert */
+    { "SnapshotEnabled",    "no"       },
+    { "SnapshotResolution", "1280x720" },
+    { "SnapshotSaveDir",    ""         },   /* "" = auto-detect SD card */
+    { "SnapshotOnActivate", "yes"      },
+    { "SnapshotOnClear",    "no"       },
+
     { NULL, NULL }
 };
 
