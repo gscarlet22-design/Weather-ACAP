@@ -142,6 +142,11 @@ void overlay_render_text(const WeatherSnapshot *snap,
 
 static int g_overlay_id = -1;       /* -1 = not yet created */
 static int g_has_video  = -1;
+/* Which JSON key the firmware uses for the overlay handle in
+ * setText/remove params. Modern (OS 12.9+) wants "identity"; some older
+ * docs used "identifier". We default to "identity" and downgrade to
+ * "identifier" only if addText returned the legacy key. */
+static const char *g_id_key = "identity";
 
 static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     char **pp = (char **)ud;
@@ -206,7 +211,12 @@ static int parse_identifier_json(const char *resp, int *out) {
     cJSON *data = cJSON_GetObjectItem(root, "data");
     if (data) {
         cJSON *id = cJSON_GetObjectItem(data, "identity");
-        if (!cJSON_IsNumber(id)) id = cJSON_GetObjectItem(data, "identifier");
+        if (cJSON_IsNumber(id)) {
+            g_id_key = "identity";
+        } else {
+            id = cJSON_GetObjectItem(data, "identifier");
+            if (cJSON_IsNumber(id)) g_id_key = "identifier";
+        }
         if (cJSON_IsNumber(id)) {
             *out = (int)id->valuedouble;
             ok = 1;
@@ -233,12 +243,19 @@ static int parse_identifier_json(const char *resp, int *out) {
  *   {"apiVersion":"1.0","method":"addText",
  *    "params":{"camera":1,"position":"topLeft","text":"..."}}
  *
- *   → {"apiVersion":"1.0","data":{"identifier":0}}
+ *   → {"apiVersion":"1.8","data":{"camera":1,"identity":N}}
  *
  *   {"apiVersion":"1.0","method":"setText",
- *    "params":{"identifier":0,"text":"..."}}
+ *    "params":{"identity":N,"text":"..."}}
  *
- *   {"apiVersion":"1.0","method":"remove","params":{"identifier":0}}
+ *   {"apiVersion":"1.0","method":"remove","params":{"identity":N}}
+ *
+ * IMPORTANT: AXIS OS 12.9.57 rejects `params.identifier` with error
+ *   {"code":103,"message":"Unknown parameter supplied"} — the modern
+ *   request key is `identity` (matches the addText response key). Older
+ *   AXIS OS 11.x docs spelled it `identifier`. We track which key the
+ *   firmware echoed in addText and reuse the same one for setText/remove,
+ *   so the app works across both spellings without a probe.
  *
  * Text is JSON-string-escaped (quotes, backslashes); UTF-8 glyphs pass
  * through untouched.
@@ -266,8 +283,8 @@ void overlay_update(const WeatherSnapshot *snap,
     if (g_overlay_id >= 0) {
         snprintf(body, sizeof(body),
             "{\"apiVersion\":\"1.0\",\"method\":\"setText\","
-             "\"params\":{\"identifier\":%d,\"text\":\"%s\"}}",
-            g_overlay_id, esc);
+             "\"params\":{\"%s\":%d,\"text\":\"%s\"}}",
+            g_id_key, g_overlay_id, esc);
     } else {
         snprintf(body, sizeof(body),
             "{\"apiVersion\":\"1.0\",\"method\":\"addText\","
@@ -337,8 +354,8 @@ void overlay_delete(const char *vapix_user, const char *vapix_pass) {
     char body[128];
     snprintf(body, sizeof(body),
         "{\"apiVersion\":\"1.0\",\"method\":\"remove\","
-         "\"params\":{\"identifier\":%d}}",
-        g_overlay_id);
+         "\"params\":{\"%s\":%d}}",
+        g_id_key, g_overlay_id);
 
     CURL *curl = curl_easy_init();
     if (!curl) return;
