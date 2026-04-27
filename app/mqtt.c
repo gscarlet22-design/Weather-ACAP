@@ -130,8 +130,11 @@ int mqtt_publish(const MqttConfig *cfg,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT,       8L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discard_cb);
 
-    /* CURLOPT_MQTT_RETAIN was added in curl 7.82.0 */
-#if LIBCURL_VERSION_NUM >= 0x075200
+    /* CURLOPT_MQTT_RETAIN was added in curl 7.82.0, but some SDK sysroots
+     * define a version number >= 7.82.0 while still not exposing the constant
+     * (MQTT compiled out of the sysroot headers).  Use #ifdef rather than a
+     * version-number guard so we compile cleanly against any SDK curl.h. */
+#ifdef CURLOPT_MQTT_RETAIN
     if (cfg->retain)
         curl_easy_setopt(curl, CURLOPT_MQTT_RETAIN, 1L);
 #endif
