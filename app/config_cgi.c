@@ -30,6 +30,8 @@
 #include "overlay.h"
 #include "webhook.h"
 #include "snapshot.h"
+#include "mqtt.h"
+#include "email.h"
 
 #include <fcgiapp.h>
 
@@ -107,6 +109,22 @@ static const FieldMap FIELDS[] = {
     { "SnapshotSaveDir",    "snapshot_save_dir",   ""         },
     { "SnapshotOnActivate", "snapshot_on_activate","yes"      },
     { "SnapshotOnClear",    "snapshot_on_clear",   "no"       },
+    /* Sprint 3 — MQTT publishing */
+    { "MqttEnabled",      "mqtt_enabled",       "no"  },
+    { "MqttBrokerUrl",    "mqtt_broker_url",    ""    },
+    { "MqttTopic",        "mqtt_topic",         "weather/camera/alerts" },
+    { "MqttUser",         "mqtt_user",          ""    },
+    { "MqttPass",         "mqtt_pass",          ""    },
+    { "MqttOnAlertOnly",  "mqtt_on_alert_only", "yes" },
+    { "MqttRetain",       "mqtt_retain",        "no"  },
+    /* Sprint 3 — Email notifications */
+    { "EmailEnabled",  "email_enabled",   "no" },
+    { "EmailSmtpUrl",  "email_smtp_url",  ""   },
+    { "EmailFrom",     "email_from",      ""   },
+    { "EmailTo",       "email_to",        ""   },
+    { "EmailUser",     "email_user",      ""   },
+    { "EmailPass",     "email_pass",      ""   },
+    { "EmailOnClear",  "email_on_clear",  "no" },
     { NULL, NULL, NULL }
 };
 
@@ -341,7 +359,9 @@ static void endpoint_config(void) {
     out_puts("{\n");
     for (int i = 0; FIELDS[i].param; i++) {
         char *v = cfg_get(FIELDS[i].param);
-        int is_secret = (strcmp(FIELDS[i].param, "VapixPass") == 0);
+        int is_secret = (strcmp(FIELDS[i].param, "VapixPass")  == 0 ||
+                         strcmp(FIELDS[i].param, "MqttPass")   == 0 ||
+                         strcmp(FIELDS[i].param, "EmailPass")  == 0);
         out_printf("  \"%s\": \"", FIELDS[i].form);
         if (is_secret) {
             if (v && *v) out_puts("__SET__");
@@ -381,7 +401,9 @@ static void endpoint_save(const char *body) {
             }
         }
         if (!param_name) continue;
-        if (strcmp(param_name, "VapixPass") == 0
+        if ((strcmp(param_name, "VapixPass") == 0 ||
+             strcmp(param_name, "MqttPass")  == 0 ||
+             strcmp(param_name, "EmailPass") == 0)
             && strcmp(kv[i].value, "__SET__") == 0) continue;
 
         overrides[ov_count][0] = param_name;
@@ -854,7 +876,9 @@ static void endpoint_export(void) {
     out_puts("{\n  \"app\": \"weather_acap\",\n  \"version\": 1,\n  \"config\": {\n");
     for (int i = 0; FIELDS[i].param; i++) {
         char *v = cfg_get(FIELDS[i].param);
-        int is_secret = (strcmp(FIELDS[i].param, "VapixPass") == 0);
+        int is_secret = (strcmp(FIELDS[i].param, "VapixPass")  == 0 ||
+                         strcmp(FIELDS[i].param, "MqttPass")   == 0 ||
+                         strcmp(FIELDS[i].param, "EmailPass")  == 0);
         out_printf("    \"%s\": \"", FIELDS[i].param);
         if (!is_secret) json_esc_out(v);
         out_printf("\"%s\n", FIELDS[i + 1].param ? "," : "");
@@ -876,7 +900,10 @@ static void endpoint_import(const char *body) {
     for (int i = 0; FIELDS[i].param && ov_count < 64; i++) {
         cJSON *v = cJSON_GetObjectItem(cfg, FIELDS[i].param);
         if (!cJSON_IsString(v)) continue;
-        if (strcmp(FIELDS[i].param, "VapixPass") == 0 && !*v->valuestring) continue;
+        if ((strcmp(FIELDS[i].param, "VapixPass") == 0 ||
+             strcmp(FIELDS[i].param, "MqttPass")  == 0 ||
+             strcmp(FIELDS[i].param, "EmailPass") == 0)
+            && !*v->valuestring) continue;
         overrides[ov_count][0] = FIELDS[i].param;
         overrides[ov_count][1] = v->valuestring;
         ov_count++;
@@ -889,6 +916,88 @@ static void endpoint_import(const char *body) {
     json_header();
     out_printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
                ok ? "true" : "false", ov_count, ok ? 0 : 1);
+}
+
+/* ── Sprint 3 notification test endpoints ──────────────────────────────── */
+
+static void endpoint_test_mqtt(void) {
+    char *broker  = cfg_get("MqttBrokerUrl");
+    char *topic   = cfg_get("MqttTopic");
+    char *user    = cfg_get("MqttUser");
+    char *pass    = cfg_get("MqttPass");
+    char *retain_s= cfg_get("MqttRetain");
+
+    if (!broker || !*broker) {
+        free(broker); free(topic); free(user); free(pass); free(retain_s);
+        err_json("MqttBrokerUrl not configured");
+        return;
+    }
+
+    MqttConfig cfg = {
+        .enabled      = 1,
+        .broker_url   = broker,
+        .topic        = topic,
+        .username     = user,
+        .password     = pass,
+        .on_alert_only= 0,
+        .retain       = retain_s && strcasecmp(retain_s, "yes") == 0,
+    };
+
+    WeatherSnapshot snap;
+    memset(&snap, 0, sizeof(snap));
+    snap.conditions.valid = 1;
+    snap.conditions.temp_f = 72.0f;
+    snprintf(snap.conditions.description, sizeof(snap.conditions.description),
+             "MQTT Test");
+    snprintf(snap.conditions.provider, sizeof(snap.conditions.provider), "test");
+
+    int ok = mqtt_publish(&cfg, &snap, "mqtt_test", "");
+
+    free(broker); free(topic); free(user); free(pass); free(retain_s);
+
+    json_header();
+    out_printf("{\"ok\":%s}\n", ok ? "true" : "false");
+}
+
+static void endpoint_test_email(void) {
+    char *smtp   = cfg_get("EmailSmtpUrl");
+    char *from   = cfg_get("EmailFrom");
+    char *to     = cfg_get("EmailTo");
+    char *user   = cfg_get("EmailUser");
+    char *pass   = cfg_get("EmailPass");
+
+    if (!smtp || !*smtp) {
+        free(smtp); free(from); free(to); free(user); free(pass);
+        err_json("EmailSmtpUrl not configured");
+        return;
+    }
+    if (!from || !*from) {
+        free(smtp); free(from); free(to); free(user); free(pass);
+        err_json("EmailFrom not configured");
+        return;
+    }
+    if (!to || !*to) {
+        free(smtp); free(from); free(to); free(user); free(pass);
+        err_json("EmailTo not configured");
+        return;
+    }
+
+    EmailConfig cfg = {
+        .enabled   = 1,
+        .smtp_url  = smtp,
+        .from      = from,
+        .to        = to,
+        .username  = user,
+        .password  = pass,
+        .on_clear  = 0,
+    };
+
+    int rc = email_send(&cfg, "email_test", "", NULL);
+
+    free(smtp); free(from); free(to); free(user); free(pass);
+
+    json_header();
+    out_printf("{\"ok\":%s}\n", rc == 0 ? "true" : "false");
 }
 
 /* ── Dispatcher ────────────────────────────────────────────────────────── */
@@ -959,6 +1068,8 @@ static void handle_request(void) {
     else if (strcmp(action, "snapshot_list") == 0)  endpoint_snapshot_list();
     else if (strcmp(action, "snapshot_image") == 0) endpoint_snapshot_image(qs);
     else if (strcmp(action, "test_snapshot") == 0 && is_post) endpoint_test_snapshot();
+    else if (strcmp(action, "test_mqtt")  == 0 && is_post) endpoint_test_mqtt();
+    else if (strcmp(action, "test_email") == 0 && is_post) endpoint_test_email();
     else {
         err_json("unknown action or wrong method");
     }
