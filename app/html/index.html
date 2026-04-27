@@ -304,15 +304,17 @@
           <small id="snap-save-dir-info" class="dim"></small>
         </div>
         <div class="card-body">
-          <div class="diag-row">
-            <button class="btn btn-ghost" id="snap-test-btn" type="button">Take test snapshot now</button>
-            <div id="snap-test-result" class="diag-result">&mdash;</div>
+          <div class="diag-row" style="margin-bottom:0.8rem;">
+            <button class="btn btn-primary btn-small" id="snap-capture-btn" type="button">&#128247; Capture now</button>
+            <div id="snap-capture-result" class="diag-result">&mdash;</div>
           </div>
           <div id="snap-gallery">
-            <p class="empty">No snapshots yet. Enable capture above and wait for an alert, or click &ldquo;Take test snapshot now.&rdquo;</p>
+            <p class="empty">No snapshots yet. Enable capture above and wait for an alert, or click &ldquo;Capture now.&rdquo;</p>
           </div>
           <div class="form-actions" style="margin-top:0.6rem;">
             <button class="btn btn-ghost btn-small" id="snap-refresh-btn" type="button">Refresh list</button>
+            <button class="btn btn-ghost btn-small" id="snap-test-btn" type="button">Test &amp; diagnose</button>
+            <div id="snap-test-result" class="diag-result" style="font-size:0.8rem;">&mdash;</div>
           </div>
         </div>
       </div>
@@ -503,8 +505,9 @@
             </div>
           </div>
           <div class="form-row">
-            <label for="f-email-to">To address</label>
-            <input id="f-email-to" type="email" placeholder="ops@example.com">
+            <label for="f-email-to">To address(es)</label>
+            <input id="f-email-to" type="text" placeholder="ops@example.com, oncall@example.com">
+            <small>Separate multiple recipients with commas.</small>
           </div>
           <div class="form-grid-2">
             <div class="form-row">

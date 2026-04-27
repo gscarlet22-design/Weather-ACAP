@@ -185,8 +185,34 @@ int email_send(const EmailConfig *cfg,
     CURL *curl = curl_easy_init();
     if (!curl) { free(msg); return -1; }
 
-    /* Recipient list — single address only for now */
-    struct curl_slist *rcpts = curl_slist_append(NULL, cfg->to);
+    /* Recipient list — parse comma-separated addresses in cfg->to.
+     * Each token is trimmed of leading/trailing whitespace before being
+     * added as a separate SMTP RCPT TO envelope address. */
+    struct curl_slist *rcpts = NULL;
+    {
+        char *to_copy = strdup(cfg->to);
+        char *save    = NULL;
+        char *tok     = strtok_r(to_copy, ",", &save);
+        while (tok) {
+            /* trim leading whitespace */
+            while (*tok == ' ' || *tok == '\t') tok++;
+            /* trim trailing whitespace */
+            char *end = tok + strlen(tok);
+            while (end > tok && (end[-1] == ' ' || end[-1] == '\t' ||
+                                  end[-1] == '\r' || end[-1] == '\n'))
+                *--end = '\0';
+            if (*tok)
+                rcpts = curl_slist_append(rcpts, tok);
+            tok = strtok_r(NULL, ",", &save);
+        }
+        free(to_copy);
+    }
+    if (!rcpts) {
+        curl_easy_cleanup(curl);
+        free(msg);
+        syslog(LOG_WARNING, "email: no valid recipients parsed from \"%s\"", cfg->to);
+        return -1;
+    }
 
     /* SMTP auth */
     if (cfg->username && *cfg->username) {
