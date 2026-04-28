@@ -116,6 +116,10 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     /* Sprint 5 — Snapshot auto-delete */
     { "SnapshotMaxCount", "50" },   /* max .jpg files to keep; 0 = unlimited */
 
+    /* Sprint 7 — Notification cool-down */
+    { "AlertCooldownMin",     "10" },   /* minutes between repeat notifications; 0 = disabled */
+    { "ThresholdCooldownMin", "10" },   /* same for threshold-rule notifications */
+
     { NULL, NULL }
 };
 

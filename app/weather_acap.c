@@ -51,6 +51,46 @@ static void on_sigusr1(int sig) {
     g_reload_flag = 1;   /* checked in poll loop */
 }
 
+/* ── Sprint 7: Notification cool-down ──────────────────────────────────── */
+
+/* Track the last time a notification was sent for each (event, action) key.
+ * Only notification channels are throttled — VAPIX port transitions always
+ * reflect real-time state and are NOT subject to cool-down. */
+#define NOTIF_HISTORY_MAX 64
+typedef struct { char key[128]; time_t last_notif; } NotifRecord;
+static NotifRecord g_notif_history[NOTIF_HISTORY_MAX];
+static int         g_notif_n = 0;
+
+/* Returns 1 if the cool-down has elapsed (or no record exists yet) and
+ * updates the record.  Returns 0 if still in cool-down. */
+static int cooldown_check_and_update(const char *event, const char *action,
+                                     int cooldown_min) {
+    char key[128];
+    snprintf(key, sizeof(key), "%s:%s", event ? event : "", action ? action : "");
+
+    time_t now = time(NULL);
+    long   hold = (long)cooldown_min * 60;
+
+    /* Search for existing record */
+    for (int i = 0; i < g_notif_n; i++) {
+        if (strcmp(g_notif_history[i].key, key) == 0) {
+            if (hold > 0 && (now - g_notif_history[i].last_notif) < hold)
+                return 0;  /* still in cool-down */
+            g_notif_history[i].last_notif = now;
+            return 1;
+        }
+    }
+
+    /* New record */
+    if (g_notif_n < NOTIF_HISTORY_MAX) {
+        snprintf(g_notif_history[g_notif_n].key,
+                 sizeof(g_notif_history[g_notif_n].key), "%s", key);
+        g_notif_history[g_notif_n].last_notif = now;
+        g_notif_n++;
+    }
+    return 1;
+}
+
 /* ── Webhook context passed to alert callback ───────────────────────────── */
 
 typedef struct {
@@ -66,9 +106,8 @@ typedef struct {
     /* Sprint 3 — MQTT + email */
     MqttConfig  mqtt_cfg;
     EmailConfig email_cfg;
-    /* Sprint 5 — threshold alerts (ThresholdMap lives in do_poll scope;
-     * pointer stored here so on_alert_transition can reach it for any
-     * threshold-triggered snapshot/email/mqtt re-use). */
+    /* Sprint 7 — notification cool-down (minutes; 0 = disabled) */
+    int cooldown_min;
 } TickCtx;
 
 static void on_alert_transition(const char *event, const char *headline,
@@ -83,28 +122,40 @@ static void on_alert_transition(const char *event, const char *headline,
     char event_type[64];
     snprintf(event_type, sizeof(event_type), "alert_%s", action);
 
-    /* Snapshot capture (Sprint 2) */
-    snapshot_capture(event, action,
-                     ctx->vapix_user, ctx->vapix_pass,
-                     &ctx->snap_cfg,
-                     NULL, 0);
+    /* Sprint 7 — cool-down gate for notification channels only.
+     * VAPIX port activation already happened inside alerts_process /
+     * threshold_process before this callback was invoked. */
+    int send_notifs = cooldown_check_and_update(event, action, ctx->cooldown_min);
 
-    /* Webhook */
-    if (ctx->webhook_enabled && ctx->webhook_url && *ctx->webhook_url)
+    /* Snapshot capture (Sprint 2) — gated by cool-down */
+    if (send_notifs)
+        snapshot_capture(event, action,
+                         ctx->vapix_user, ctx->vapix_pass,
+                         &ctx->snap_cfg,
+                         NULL, 0);
+
+    /* Webhook — gated by cool-down */
+    if (send_notifs &&
+        ctx->webhook_enabled && ctx->webhook_url && *ctx->webhook_url)
         webhook_post(ctx->webhook_url, ctx->snap, event_type, event);
 
-    /* MQTT publish (Sprint 3) */
-    if (ctx->mqtt_cfg.enabled)
+    /* MQTT publish (Sprint 3) — gated by cool-down */
+    if (send_notifs && ctx->mqtt_cfg.enabled)
         mqtt_publish(&ctx->mqtt_cfg, ctx->snap, event_type, event);
 
-    /* Email notification (Sprint 3) — on_clear gate checked inside */
-    if (ctx->email_cfg.enabled) {
+    /* Email notification (Sprint 3) — gated by cool-down */
+    if (send_notifs && ctx->email_cfg.enabled) {
         int should_send = 1;
         if (strcmp(action, "cleared") == 0 && !ctx->email_cfg.on_clear)
             should_send = 0;
         if (should_send)
             email_send(&ctx->email_cfg, event_type, event, ctx->snap);
     }
+
+    if (!send_notifs)
+        syslog(LOG_INFO,
+               "cooldown: suppressed notifications for %s/%s (%d min hold-off)",
+               event ? event : "?", action ? action : "?", ctx->cooldown_min);
 }
 
 /* ── Status JSON (read by CGI) ──────────────────────────────────────────── */
@@ -210,6 +261,8 @@ static const char *CONFIG_PARAMS[] = {
     "EmailTo", "EmailUser", "EmailPass", "EmailOnClear",
     /* Sprint 5 — threshold alerts + snapshot auto-delete */
     "ThresholdMap", "SnapshotMaxCount",
+    /* Sprint 7 — notification cool-down */
+    "AlertCooldownMin", "ThresholdCooldownMin",
     NULL
 };
 
@@ -377,6 +430,10 @@ static gboolean do_poll(gpointer user_data) {
     char *th_map       = params_get("ThresholdMap");
     int   sn_max_count = params_get_int("SnapshotMaxCount", 50);
 
+    /* Sprint 7 — notification cool-down */
+    int alert_cooldown  = params_get_int("AlertCooldownMin", 10);
+    int thresh_cooldown = params_get_int("ThresholdCooldownMin", 10);
+
     int is_mock = mock && strcasecmp(mock, "yes") == 0;
 
     WeatherSnapshot snap;
@@ -450,15 +507,20 @@ static gboolean do_poll(gpointer user_data) {
                 .password  = em_pass,
                 .on_clear  = em_on_clear && strcasecmp(em_on_clear, "yes") == 0,
             },
+            /* Sprint 7 — NWS alert cool-down */
+            .cooldown_min = alert_cooldown,
         };
 
         /* Fire/clear virtual input ports — NWS alert-type rules */
         alerts_process(&snap, &map, vuser, vpass, on_alert_transition, &ctx);
 
-        /* Sprint 5 — Fire/clear ports for numeric threshold rules */
+        /* Sprint 5 — Fire/clear ports for numeric threshold rules.
+         * Sprint 7 — Use separate cool-down for threshold notifications. */
+        TickCtx thresh_ctx = ctx;
+        thresh_ctx.cooldown_min = thresh_cooldown;
         ThresholdMap tmap;
         threshold_map_parse(th_map, &tmap);
-        threshold_process(&snap, &tmap, vuser, vpass, on_alert_transition, &ctx);
+        threshold_process(&snap, &tmap, vuser, vpass, on_alert_transition, &thresh_ctx);
 
         /* Overlay */
         OverlayConfig ocfg = {

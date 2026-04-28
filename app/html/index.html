@@ -227,6 +227,36 @@
           </div>
         </div>
       </div>
+
+      <!-- Sprint 7 — Notification Cool-down -->
+      <div class="card" style="margin-top:1.2rem;">
+        <div class="card-header">
+          <h2>Notification Cool-down</h2>
+          <span class="pill pill-info">Sprint 7</span>
+        </div>
+        <div class="card-body">
+          <p class="hint">
+            Prevent notification floods by limiting how often email, MQTT, webhook, and snapshot
+            notifications are sent for the same event. VAPIX virtual input port state is
+            <strong>always</strong> updated in real time regardless of this setting.
+          </p>
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-alert-cooldown">NWS alert cool-down (minutes)</label>
+              <input id="f-alert-cooldown" type="number" min="0" max="1440" step="1" style="max-width:120px;">
+              <small>Minimum time between repeat notifications for the same NWS alert type. Set to 0 to disable.</small>
+            </div>
+            <div class="form-row">
+              <label for="f-threshold-cooldown">Threshold rule cool-down (minutes)</label>
+              <input id="f-threshold-cooldown" type="number" min="0" max="1440" step="1" style="max-width:120px;">
+              <small>Minimum time between repeat notifications for the same threshold condition. Set to 0 to disable.</small>
+            </div>
+          </div>
+          <div class="row-actions">
+            <button class="btn btn-primary" data-save="alerts" type="button">Save cool-down settings</button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- Overlay -->
