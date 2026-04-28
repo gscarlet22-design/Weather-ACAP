@@ -191,6 +191,42 @@
           </div>
         </div>
       </div>
+
+      <!-- Sprint 5 — Threshold condition alerts -->
+      <div class="card" style="margin-top:1.2rem;">
+        <div class="card-header">
+          <h2>Threshold &rarr; Port Mapping</h2>
+          <span class="pill pill-info">Sprint 5</span>
+        </div>
+        <div class="card-body">
+          <p class="hint">
+            Fire a VAPIX virtual input port when a numeric weather condition crosses a threshold.
+            Useful for heat warnings, high-wind detection, or any condition the NWS alert system
+            doesn&rsquo;t cover. Ports are activated while the condition is exceeded and cleared
+            once it drops back below the threshold.
+          </p>
+          <div class="alerts-table-wrap">
+            <table class="alerts-table" id="threshold-table">
+              <thead>
+                <tr>
+                  <th style="width:60px;">On</th>
+                  <th style="width:160px;">Condition</th>
+                  <th style="width:80px;">Op</th>
+                  <th style="width:90px;">Value</th>
+                  <th style="width:100px;">Port #</th>
+                  <th style="width:180px;">Test</th>
+                  <th style="width:50px;"></th>
+                </tr>
+              </thead>
+              <tbody id="threshold-tbody"></tbody>
+            </table>
+          </div>
+          <div class="row-actions">
+            <button class="btn btn-ghost" id="threshold-add" type="button">+ Add threshold rule</button>
+            <button class="btn btn-primary" data-save="alerts" type="button">Save threshold rules</button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- Overlay -->
@@ -290,6 +326,11 @@
                 <span>Alert clears</span>
               </label>
             </div>
+          </div>
+          <div class="form-row" style="margin-top:0.8rem;">
+            <label for="f-snapshot-max-count">Max snapshots to keep</label>
+            <input id="f-snapshot-max-count" type="number" min="0" max="9999" step="1" style="max-width:120px;">
+            <small>Oldest .jpg files are deleted automatically after each new capture. Set to 0 for unlimited.</small>
           </div>
         </div>
       </div>

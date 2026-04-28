@@ -110,6 +110,12 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     { "EmailPass",     ""    },
     { "EmailOnClear",  "no"  },
 
+    /* Sprint 5 — Threshold condition alerts */
+    { "ThresholdMap",     ""   },   /* "Condition:Op:Value:Port:Enabled|..." */
+
+    /* Sprint 5 — Snapshot auto-delete */
+    { "SnapshotMaxCount", "50" },   /* max .jpg files to keep; 0 = unlimited */
+
     { NULL, NULL }
 };
 

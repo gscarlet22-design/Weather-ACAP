@@ -15,6 +15,7 @@
 #include "snapshot.h"
 #include "mqtt.h"
 #include "email.h"
+#include "threshold.h"
 
 #include <curl/curl.h>
 #include <glib.h>
@@ -65,6 +66,9 @@ typedef struct {
     /* Sprint 3 — MQTT + email */
     MqttConfig  mqtt_cfg;
     EmailConfig email_cfg;
+    /* Sprint 5 — threshold alerts (ThresholdMap lives in do_poll scope;
+     * pointer stored here so on_alert_transition can reach it for any
+     * threshold-triggered snapshot/email/mqtt re-use). */
 } TickCtx;
 
 static void on_alert_transition(const char *event, const char *headline,
@@ -204,6 +208,8 @@ static const char *CONFIG_PARAMS[] = {
     "MqttUser", "MqttPass", "MqttOnAlertOnly", "MqttRetain",
     "EmailEnabled", "EmailSmtpUrl", "EmailFrom",
     "EmailTo", "EmailUser", "EmailPass", "EmailOnClear",
+    /* Sprint 5 — threshold alerts + snapshot auto-delete */
+    "ThresholdMap", "SnapshotMaxCount",
     NULL
 };
 
@@ -367,6 +373,10 @@ static gboolean do_poll(gpointer user_data) {
     char *em_pass     = params_get("EmailPass");
     char *em_on_clear = params_get("EmailOnClear");
 
+    /* Sprint 5 — threshold alerts + snapshot auto-delete */
+    char *th_map       = params_get("ThresholdMap");
+    int   sn_max_count = params_get_int("SnapshotMaxCount", 50);
+
     int is_mock = mock && strcasecmp(mock, "yes") == 0;
 
     WeatherSnapshot snap;
@@ -420,6 +430,7 @@ static gboolean do_poll(gpointer user_data) {
                 .save_dir    = sn_dir,
                 .on_activate = !sn_activate || strcasecmp(sn_activate, "yes") == 0,
                 .on_clear    = sn_clear    && strcasecmp(sn_clear,    "yes") == 0,
+                .max_count   = sn_max_count,
             },
             .mqtt_cfg = {
                 .enabled      = mq_enabled && strcasecmp(mq_enabled, "yes") == 0,
@@ -441,8 +452,13 @@ static gboolean do_poll(gpointer user_data) {
             },
         };
 
-        /* Fire/clear virtual input ports */
+        /* Fire/clear virtual input ports — NWS alert-type rules */
         alerts_process(&snap, &map, vuser, vpass, on_alert_transition, &ctx);
+
+        /* Sprint 5 — Fire/clear ports for numeric threshold rules */
+        ThresholdMap tmap;
+        threshold_map_parse(th_map, &tmap);
+        threshold_process(&snap, &tmap, vuser, vpass, on_alert_transition, &ctx);
 
         /* Overlay */
         OverlayConfig ocfg = {
@@ -489,6 +505,7 @@ static gboolean do_poll(gpointer user_data) {
     free(mq_user); free(mq_pass); free(mq_alerts_only); free(mq_retain);
     free(em_enabled); free(em_smtp); free(em_from);
     free(em_to); free(em_user); free(em_pass); free(em_on_clear);
+    free(th_map);
 
     return G_SOURCE_CONTINUE;
 }
