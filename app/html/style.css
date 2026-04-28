@@ -451,8 +451,13 @@ input:focus, select:focus, textarea:focus {
   background: rgba(255,255,255,0.12);
 }
 
-/* Native <option> popups ignore CSS variables — force explicit dark colors
- * so text stays readable regardless of OS/browser theme. */
+/* Force the browser's native <select> dropdown popup to use dark rendering.
+ * color-scheme:dark is the most reliable cross-browser fix — it tells the OS
+ * to render the native widget in dark mode so text is always readable.
+ * The explicit option background/color serve as a fallback for Firefox. */
+select {
+  color-scheme: dark;
+}
 select option {
   background: #14273f;
   color: #e9f1fb;
