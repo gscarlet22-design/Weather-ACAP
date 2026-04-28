@@ -82,6 +82,7 @@
         if (tab === "snapshots")   refreshSnapshots();
         if (tab === "diagnostics") refreshDeviceInfo();
         if (tab === "diagnostics") refreshHistory();
+        if (tab === "dashboard")   refreshSparklines();
       });
     });
   }
@@ -871,6 +872,99 @@
     });
   }
 
+  /* ── Sparkline trend charts (Sprint 6) ─────────────────────────────────── */
+  var sparkTimer = null;
+
+  function drawSparkline(canvasId, values, color) {
+    var canvas = $(canvasId);
+    if (!canvas) return;
+
+    /* Match canvas pixel width to its CSS layout width for crisp rendering */
+    var rect = canvas.getBoundingClientRect();
+    var w = Math.round(rect.width) || 300;
+    var h = canvas.height || 48;
+    canvas.width = w;
+
+    var ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+
+    if (!values || values.length < 2) return;
+
+    var min = values[0], max = values[0];
+    for (var i = 1; i < values.length; i++) {
+      if (values[i] < min) min = values[i];
+      if (values[i] > max) max = values[i];
+    }
+    /* Give a small pad so flat lines are visible */
+    var range = max - min || 1;
+    var pad = range * 0.15;
+    min -= pad; max += pad; range = max - min;
+
+    function xp(i)   { return (i / (values.length - 1)) * w; }
+    function yp(val) { return h - ((val - min) / range) * (h - 4) - 2; }
+
+    /* Filled area */
+    ctx.beginPath();
+    ctx.moveTo(xp(0), h);
+    ctx.lineTo(xp(0), yp(values[0]));
+    for (var j = 1; j < values.length; j++)
+      ctx.lineTo(xp(j), yp(values[j]));
+    ctx.lineTo(xp(values.length - 1), h);
+    ctx.closePath();
+    ctx.fillStyle = color.replace(")", ", 0.18)").replace("rgb(", "rgba(");
+    ctx.fill();
+
+    /* Line on top */
+    ctx.beginPath();
+    ctx.moveTo(xp(0), yp(values[0]));
+    for (var k = 1; k < values.length; k++)
+      ctx.lineTo(xp(k), yp(values[k]));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+
+    /* Dot at the latest value */
+    ctx.beginPath();
+    ctx.arc(xp(values.length - 1), yp(values[values.length - 1]), 3, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  function refreshSparklines() {
+    cgi("cond_history").then(function (r) {
+      var pts = r.points || [];
+      var empty = $("trend-empty");
+
+      if (pts.length < 2) {
+        if (empty) empty.style.display = "";
+        return;
+      }
+      if (empty) empty.style.display = "none";
+
+      var temps  = pts.map(function (p) { return p.temp_f; });
+      var winds  = pts.map(function (p) { return p.wind_mph; });
+      var hums   = pts.map(function (p) { return p.humidity_pct; });
+
+      drawSparkline("spark-temp", temps, "rgb(79, 195, 247)");   /* sky blue */
+      drawSparkline("spark-wind", winds, "rgb(129, 199, 132)");  /* green   */
+      drawSparkline("spark-hum",  hums,  "rgb(255, 183, 77)");   /* amber   */
+
+      /* Update current-value labels */
+      var last = pts[pts.length - 1];
+      $("spark-temp-cur").textContent = last.temp_f.toFixed(1) + "\u00B0";
+      $("spark-wind-cur").textContent = last.wind_mph.toFixed(0) + " mph";
+      $("spark-hum-cur").textContent  = last.humidity_pct + "%";
+
+      /* Range label: first ts → last ts */
+      var t0 = (pts[0].ts || "").substring(0, 16).replace("T", " ");
+      var t1 = (last.ts  || "").substring(0, 16).replace("T", " ");
+      var range = $("trend-range");
+      if (range) range.textContent = t0 + " \u2013 " + t1 + " UTC";
+
+    }).catch(function () { /* silent — daemon may not have polled yet */ });
+  }
+
   /* ── Boot ────────────────────────────────────────────────────────────────── */
   function init() {
     initTabs();
@@ -890,6 +984,7 @@
         refreshOverlayPreview();
         pollStatus();
         refreshHistory();
+        refreshSparklines();
       })
       .catch(function (e) {
         toast("Failed to load config: " + e.message, "error");
@@ -897,6 +992,9 @@
 
     /* Start periodic status polling */
     pollTimer = setInterval(pollStatus, POLL_MS);
+
+    /* Refresh sparklines every 5 minutes */
+    sparkTimer = setInterval(refreshSparklines, 5 * 60 * 1000);
   }
 
   if (document.readyState === "loading") {

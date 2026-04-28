@@ -11,6 +11,7 @@
 #include "alerts.h"
 #include "overlay.h"
 #include "history.h"
+#include "condhistory.h"
 #include "webhook.h"
 #include "snapshot.h"
 #include "mqtt.h"
@@ -490,6 +491,9 @@ static gboolean do_poll(gpointer user_data) {
 
     /* Status file */
     write_status(&snap, overlay_text, video_present, last_error);
+
+    /* Sprint 6 — conditions history (only when fetch succeeded) */
+    if (ok) condhistory_append(&snap);
 
     /* Heartbeat */
     FILE *hb = fopen(HEARTBEAT_FILE, "w");

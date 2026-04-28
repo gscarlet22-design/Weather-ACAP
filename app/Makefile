@@ -38,7 +38,7 @@ CGI_LDLIBS    = $(shell pkg-config --libs $(CGI_PKGS)) -lm
 # Main daemon sources
 MAIN_SRCS = weather_acap.c nws.c openmeteo.c weather_api.c \
             alerts.c overlay.c params.c cJSON.c \
-            vapix.c history.c webhook.c snapshot.c \
+            vapix.c history.c condhistory.c webhook.c snapshot.c \
             mqtt.c email.c threshold.c
 MAIN_OBJS = $(MAIN_SRCS:.c=.o)
 

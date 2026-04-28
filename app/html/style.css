@@ -848,3 +848,38 @@ pre {
   0%, 100% { box-shadow: 0 0 0 rgba(239,83,80,0); }
   50%      { box-shadow: 0 0 12px rgba(239,83,80,0.6); }
 }
+
+/* ── Sprint 6: Sparkline trend charts ───────────────────────────────────── */
+.card-trends { grid-column: 1 / -1; } /* full width across the dashboard grid */
+
+.sparkline-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.spark-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.spark-label {
+  width: 96px;
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.sparkline {
+  flex: 1;
+  display: block;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.04);
+  min-width: 0;  /* allow flex shrink */
+}
+.spark-cur {
+  width: 48px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 0.88rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}

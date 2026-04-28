@@ -98,6 +98,33 @@
             </ol>
           </div>
         </div>
+
+        <div class="card card-trends">
+          <div class="card-header">
+            <h2>Conditions Trend</h2>
+            <small class="dim" id="trend-range"></small>
+          </div>
+          <div class="card-body">
+            <div class="sparkline-group">
+              <div class="spark-row">
+                <span class="spark-label">Temp (°F)</span>
+                <canvas id="spark-temp" class="sparkline" height="48"></canvas>
+                <span class="spark-cur" id="spark-temp-cur">--</span>
+              </div>
+              <div class="spark-row">
+                <span class="spark-label">Wind (mph)</span>
+                <canvas id="spark-wind" class="sparkline" height="48"></canvas>
+                <span class="spark-cur" id="spark-wind-cur">--</span>
+              </div>
+              <div class="spark-row">
+                <span class="spark-label">Humidity (%)</span>
+                <canvas id="spark-hum" class="sparkline" height="48"></canvas>
+                <span class="spark-cur" id="spark-hum-cur">--</span>
+              </div>
+            </div>
+            <p class="hint" id="trend-empty" style="display:none;">No history yet — trend data builds up after a few poll cycles.</p>
+          </div>
+        </div>
       </div>
     </section>
 
