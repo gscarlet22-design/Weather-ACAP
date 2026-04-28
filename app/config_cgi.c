@@ -129,6 +129,9 @@ static const FieldMap FIELDS[] = {
     /* Sprint 5 — threshold alerts + snapshot auto-delete */
     { "ThresholdMap",     "threshold_map",      ""   },
     { "SnapshotMaxCount", "snapshot_max_count", "50" },
+    /* Sprint 7 — notification cool-down */
+    { "AlertCooldownMin",     "alert_cooldown_min",     "10" },
+    { "ThresholdCooldownMin", "threshold_cooldown_min", "10" },
     { NULL, NULL, NULL }
 };
 

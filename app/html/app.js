@@ -144,6 +144,9 @@
       buildAlertTable(cfg.alert_map || "");
       /* Threshold table (Sprint 5) */
       buildThresholdTable(cfg.threshold_map || "");
+      /* Cool-down settings (Sprint 7) */
+      $("f-alert-cooldown").value     = cfg.alert_cooldown_min !== undefined ? cfg.alert_cooldown_min : "10";
+      $("f-threshold-cooldown").value = cfg.threshold_cooldown_min !== undefined ? cfg.threshold_cooldown_min : "10";
     });
   }
 
@@ -160,6 +163,8 @@
     } else if (section === "alerts") {
       pairs.push(encField("alert_map", serializeAlertMap()));
       pairs.push(encField("threshold_map", serializeThresholdMap()));
+      pairs.push(encField("alert_cooldown_min",     $("f-alert-cooldown").value || "10"));
+      pairs.push(encField("threshold_cooldown_min", $("f-threshold-cooldown").value || "10"));
     } else if (section === "overlay") {
       pairs.push(encField("overlay_enabled",        $("f-overlay-enabled").checked ? "yes" : "no"));
       pairs.push(encField("overlay_position",       $("f-overlay-position").value));
