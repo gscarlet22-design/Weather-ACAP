@@ -54,6 +54,7 @@
 #define STATUS_FILE    "/tmp/weather_acap_status.json"
 #define HEARTBEAT_FILE "/tmp/weather_acap_heartbeat"
 #define HISTORY_FILE   "/tmp/weather_acap_history.jsonl"
+#define COND_FILE      "/tmp/weather_acap_cond.jsonl"
 
 /* Current FastCGI request — set by the accept loop, used by every output
  * helper below.  Not thread-safe by design: the FastCGI accept loop is
@@ -1074,6 +1075,63 @@ static void endpoint_threshold_list(void) {
 
 /* ── Dispatcher ────────────────────────────────────────────────────────── */
 
+/* ── Sprint 6: conditions history ──────────────────────────────────────── */
+
+/* Return the last 144 poll data-points (≈ 12 h at 5-min intervals) as a
+ * JSON array so the dashboard sparklines can render without any C-side
+ * parsing — the JS consumes the array directly. */
+static void endpoint_cond_history(void) {
+    /* Read last 144 lines from the conditions JSONL file. */
+    char *raw = read_file_tail(COND_FILE, 144);
+
+    json_header();
+    out_puts("{\"ok\":true,\"points\":[\n");
+
+    if (!raw || !*raw) {
+        free(raw);
+        out_puts("]}\n");
+        return;
+    }
+
+    /* Walk lines, parse each JSON object, re-emit as array elements.
+     * We only need ts/temp_f/wind_mph/humidity_pct — skip the description
+     * to keep the payload compact. */
+    int first = 1;
+    char *line = raw;
+    while (*line) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+
+        if (*line) {
+            cJSON *obj = cJSON_Parse(line);
+            if (obj) {
+                cJSON *ts   = cJSON_GetObjectItem(obj, "ts");
+                cJSON *tf   = cJSON_GetObjectItem(obj, "temp_f");
+                cJSON *wm   = cJSON_GetObjectItem(obj, "wind_mph");
+                cJSON *hum  = cJSON_GetObjectItem(obj, "humidity_pct");
+
+                if (cJSON_IsString(ts) && ts->valuestring) {
+                    if (!first) out_puts(",\n");
+                    first = 0;
+                    out_printf("  {\"ts\":\"");
+                    json_esc_out(ts->valuestring);
+                    out_printf("\",\"temp_f\":%.1f,\"wind_mph\":%.1f,\"humidity_pct\":%d}",
+                        tf  ? tf->valuedouble  : 0.0,
+                        wm  ? wm->valuedouble  : 0.0,
+                        hum ? (int)hum->valuedouble : 0);
+                }
+                cJSON_Delete(obj);
+            }
+        }
+
+        if (!nl) break;
+        line = nl + 1;
+    }
+
+    free(raw);
+    out_puts("\n]}\n");
+}
+
 /* Read the POST body from the FastCGI input stream (not stdin). */
 static char *read_post_body(void) {
     const char *cl_str = FCGX_GetParam("CONTENT_LENGTH", g_req.envp);
@@ -1144,6 +1202,7 @@ static void handle_request(void) {
     else if (strcmp(action, "test_mqtt")  == 0 && is_post) endpoint_test_mqtt();
     else if (strcmp(action, "test_email") == 0 && is_post) endpoint_test_email();
     else if (strcmp(action, "threshold_list") == 0) endpoint_threshold_list();
+    else if (strcmp(action, "cond_history")  == 0) endpoint_cond_history();
     else {
         err_json("unknown action or wrong method");
     }

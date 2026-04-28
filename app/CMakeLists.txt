@@ -22,6 +22,7 @@ set(SHARED_SRCS
     mqtt.c
     email.c
     threshold.c
+    condhistory.c
 )
 
 # ── Main daemon ──────────────────────────────────────────────────────────
