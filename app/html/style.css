@@ -450,6 +450,14 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--accent);
   background: rgba(255,255,255,0.12);
 }
+
+/* Native <option> popups ignore CSS variables — force explicit dark colors
+ * so text stays readable regardless of OS/browser theme. */
+select option {
+  background: #14273f;
+  color: #e9f1fb;
+}
+
 input[type="number"] { font-variant-numeric: tabular-nums; }
 
 .form-row label.checkbox {
