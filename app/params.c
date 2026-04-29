@@ -120,6 +120,11 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     { "AlertCooldownMin",     "10" },   /* minutes between repeat notifications; 0 = disabled */
     { "ThresholdCooldownMin", "10" },   /* same for threshold-rule notifications */
 
+    /* Sprint 8 — Multi-camera snapshot */
+    { "MultiCamEnabled",    "no" },   /* capture from additional cameras on alert */
+    { "MultiCamList",       ""   },   /* "host:user:pass:label|..." */
+    { "MultiCamResolution", "1280x720" },
+
     { NULL, NULL }
 };
 
