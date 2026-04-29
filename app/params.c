@@ -125,6 +125,9 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     { "MultiCamList",       ""   },   /* "host:user:pass:label|..." */
     { "MultiCamResolution", "1280x720" },
 
+    /* Sprint 9 — Native AXIS events */
+    { "AxisEventsEnabled", "yes" },   /* publish alert/conditions via axevent */
+
     { NULL, NULL }
 };
 
