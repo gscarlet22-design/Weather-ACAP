@@ -17,6 +17,7 @@
 #include "mqtt.h"
 #include "email.h"
 #include "threshold.h"
+#include "multicam.h"
 
 #include <curl/curl.h>
 #include <glib.h>
@@ -109,6 +110,9 @@ typedef struct {
     EmailConfig email_cfg;
     /* Sprint 7 — notification cool-down (minutes; 0 = disabled) */
     int cooldown_min;
+    /* Sprint 8 — multi-camera snapshot */
+    MultiCamConfig multicam_cfg;
+    const char    *multicam_resolution;
 } TickCtx;
 
 static void on_alert_transition(const char *event, const char *headline,
@@ -152,6 +156,16 @@ static void on_alert_transition(const char *event, const char *headline,
         if (should_send)
             email_send(&ctx->email_cfg, event_type, event, ctx->snap);
     }
+
+    /* Sprint 8 — multi-camera snapshot — gated by cool-down */
+    if (send_notifs && ctx->multicam_cfg.enabled)
+        multicam_capture(event, action,
+                         &ctx->multicam_cfg,
+                         ctx->multicam_resolution,
+                         ctx->snap_cfg.save_dir,
+                         ctx->snap_cfg.max_count,
+                         ctx->snap_cfg.on_activate,
+                         ctx->snap_cfg.on_clear);
 
     if (!send_notifs)
         syslog(LOG_INFO,
@@ -264,6 +278,8 @@ static const char *CONFIG_PARAMS[] = {
     "ThresholdMap", "SnapshotMaxCount",
     /* Sprint 7 — notification cool-down */
     "AlertCooldownMin", "ThresholdCooldownMin",
+    /* Sprint 8 — multi-camera snapshot */
+    "MultiCamEnabled", "MultiCamList", "MultiCamResolution",
     NULL
 };
 
@@ -435,6 +451,11 @@ static gboolean do_poll(gpointer user_data) {
     int alert_cooldown  = params_get_int("AlertCooldownMin", 10);
     int thresh_cooldown = params_get_int("ThresholdCooldownMin", 10);
 
+    /* Sprint 8 — multi-camera snapshot */
+    char *mc_enabled = params_get("MultiCamEnabled");
+    char *mc_list    = params_get("MultiCamList");
+    char *mc_res     = params_get("MultiCamResolution");
+
     int is_mock = mock && strcasecmp(mock, "yes") == 0;
 
     WeatherSnapshot snap;
@@ -512,6 +533,11 @@ static gboolean do_poll(gpointer user_data) {
             .cooldown_min = alert_cooldown,
         };
 
+        /* Sprint 8 — parse and attach multi-camera config */
+        multicam_parse(mc_list, &ctx.multicam_cfg);
+        ctx.multicam_cfg.enabled  = mc_enabled && strcasecmp(mc_enabled, "yes") == 0;
+        ctx.multicam_resolution   = (mc_res && *mc_res) ? mc_res : "1280x720";
+
         /* Fire/clear virtual input ports — NWS alert-type rules */
         alerts_process(&snap, &map, vuser, vpass, on_alert_transition, &ctx);
 
@@ -572,6 +598,7 @@ static gboolean do_poll(gpointer user_data) {
     free(em_enabled); free(em_smtp); free(em_from);
     free(em_to); free(em_user); free(em_pass); free(em_on_clear);
     free(th_map);
+    free(mc_enabled); free(mc_list); free(mc_res);
 
     return G_SOURCE_CONTINUE;
 }

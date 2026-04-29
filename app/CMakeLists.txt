@@ -23,6 +23,7 @@ set(SHARED_SRCS
     email.c
     threshold.c
     condhistory.c
+    multicam.c
 )
 
 # ── Main daemon ──────────────────────────────────────────────────────────

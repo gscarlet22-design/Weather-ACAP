@@ -33,6 +33,7 @@
 #include "mqtt.h"
 #include "email.h"
 #include "threshold.h"
+#include "multicam.h"
 
 #include <fcgiapp.h>
 
@@ -133,6 +134,10 @@ static const FieldMap FIELDS[] = {
     /* Sprint 7 — notification cool-down */
     { "AlertCooldownMin",     "alert_cooldown_min",     "10" },
     { "ThresholdCooldownMin", "threshold_cooldown_min", "10" },
+    /* Sprint 8 — multi-camera snapshot */
+    { "MultiCamEnabled",    "multicam_enabled",    "no"       },
+    { "MultiCamList",       "multicam_list",       ""         },
+    { "MultiCamResolution", "multicam_resolution", "1280x720" },
     { NULL, NULL, NULL }
 };
 
@@ -1132,6 +1137,46 @@ static void endpoint_cond_history(void) {
     out_puts("\n]}\n");
 }
 
+/* ── Sprint 8: multi-camera test snapshot ──────────────────────────────── */
+
+/* POST body: host=<ip>&user=<u>&pass=<p>
+ * Attempt a single-frame JPEG capture from the given remote camera to a
+ * temporary path.  Returns {ok, http_code}.  The test file is deleted after
+ * the attempt so nothing accumulates in /tmp. */
+static void endpoint_test_multicam_snap(const char *body) {
+    KV kv[8] = {0};
+    int n = parse_kv(body, kv, 8);
+
+    const char *host = get_kv(kv, n, "host");
+    const char *user = get_kv(kv, n, "user");
+    const char *pass = get_kv(kv, n, "pass");
+
+    if (!host || !*host) {
+        free_kv(kv, n);
+        err_json("missing host parameter");
+        return;
+    }
+
+    /* Write to a temp file we always delete */
+    char tmp_path[256];
+    snprintf(tmp_path, sizeof(tmp_path),
+             "/tmp/weather_acap_mctest_%ld.jpg", (long)time(NULL));
+
+    long http_code = 0;
+    int rc = vapix_snapshot_to_file_remote(
+                host, tmp_path, "320x240",
+                user ? user : "root",
+                pass ? pass : "",
+                &http_code);
+
+    unlink(tmp_path);   /* always remove — even if rc == 0 */
+    free_kv(kv, n);
+
+    json_header();
+    out_printf("{\"ok\":%s,\"http_code\":%ld}\n",
+               rc == 0 ? "true" : "false", http_code);
+}
+
 /* Read the POST body from the FastCGI input stream (not stdin). */
 static char *read_post_body(void) {
     const char *cl_str = FCGX_GetParam("CONTENT_LENGTH", g_req.envp);
@@ -1203,6 +1248,11 @@ static void handle_request(void) {
     else if (strcmp(action, "test_email") == 0 && is_post) endpoint_test_email();
     else if (strcmp(action, "threshold_list") == 0) endpoint_threshold_list();
     else if (strcmp(action, "cond_history")  == 0) endpoint_cond_history();
+    else if (strcmp(action, "test_multicam_snap") == 0 && is_post) {
+        char *body = read_post_body();
+        endpoint_test_multicam_snap(body ? body : "");
+        free(body);
+    }
     else {
         err_json("unknown action or wrong method");
     }

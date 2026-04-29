@@ -396,6 +396,54 @@
         <button class="btn btn-primary" data-save="snapshots" type="button">Save snapshot settings</button>
       </div>
 
+      <!-- Sprint 8 — Multi-camera snapshot -->
+      <div class="card" style="margin-top:1.2rem;">
+        <div class="card-header">
+          <h2>Additional Cameras</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-multicam-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <p class="hint">
+            Capture a snapshot from other Axis cameras on your network whenever an alert fires.
+            Images are saved alongside local snapshots and share the same max-count limit.
+            Uses VAPIX Digest auth — each camera needs its own credentials.
+          </p>
+          <div class="form-grid-2">
+            <div class="form-row">
+              <label for="f-multicam-resolution">Resolution</label>
+              <select id="f-multicam-resolution">
+                <option value="1920x1080">1920&times;1080 (1080p)</option>
+                <option value="1280x720">1280&times;720 (720p)</option>
+                <option value="640x480">640&times;480 (VGA)</option>
+                <option value="320x240">320&times;240 (QVGA)</option>
+              </select>
+            </div>
+          </div>
+          <div class="alerts-table-wrap" style="margin-top:0.8rem;">
+            <table class="alerts-table" id="multicam-table">
+              <thead>
+                <tr>
+                  <th>Host / IP</th>
+                  <th>Username</th>
+                  <th>Password</th>
+                  <th>Label</th>
+                  <th style="width:140px;">Test</th>
+                  <th style="width:40px;"></th>
+                </tr>
+              </thead>
+              <tbody id="multicam-tbody"></tbody>
+            </table>
+          </div>
+          <div class="row-actions">
+            <button class="btn btn-ghost" id="multicam-add" type="button">+ Add camera</button>
+            <button class="btn btn-primary" data-save="snapshots" type="button">Save camera list</button>
+          </div>
+        </div>
+      </div>
+
       <div class="card" style="margin-top:1.2rem;">
         <div class="card-header">
           <h2>Saved Snapshots</h2>

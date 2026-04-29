@@ -148,6 +148,10 @@
       /* Cool-down settings (Sprint 7) */
       $("f-alert-cooldown").value     = cfg.alert_cooldown_min !== undefined ? cfg.alert_cooldown_min : "10";
       $("f-threshold-cooldown").value = cfg.threshold_cooldown_min !== undefined ? cfg.threshold_cooldown_min : "10";
+      /* Multi-camera settings (Sprint 8) */
+      $("f-multicam-enabled").checked  = (cfg.multicam_enabled || "").toLowerCase() === "yes";
+      $("f-multicam-resolution").value = cfg.multicam_resolution || "1280x720";
+      buildMultiCamTable(cfg.multicam_list || "");
     });
   }
 
@@ -179,6 +183,10 @@
       pairs.push(encField("snapshot_on_activate", $("f-snapshot-on-activate").checked ? "yes" : "no"));
       pairs.push(encField("snapshot_on_clear",    $("f-snapshot-on-clear").checked ? "yes" : "no"));
       pairs.push(encField("snapshot_max_count",   $("f-snapshot-max-count").value || "50"));
+      /* Sprint 8 — multi-camera */
+      pairs.push(encField("multicam_enabled",    $("f-multicam-enabled").checked ? "yes" : "no"));
+      pairs.push(encField("multicam_resolution", $("f-multicam-resolution").value));
+      pairs.push(encField("multicam_list",       serializeMultiCamList()));
     } else if (section === "advanced") {
       pairs.push(encField("system_enabled",          $("f-system-enabled").checked ? "yes" : "no"));
       pairs.push(encField("vapix_user",              $("f-vapix-user").value.trim()));
@@ -444,6 +452,84 @@
       var next = 10;
       while (used[next] && next <= maxPorts) next++;
       addThresholdRow("TempF", ">", "", next, true);
+    });
+  }
+
+  /* ── Multi-camera table (Sprint 8) ─────────────────────────────────────── */
+
+  function parseMultiCamList(listStr) {
+    if (!listStr) return [];
+    return listStr.split("|").filter(Boolean).map(function (seg) {
+      var p = seg.split(":");
+      return {
+        host:  p[0] || "",
+        user:  p[1] || "root",
+        pass:  p[2] || "",
+        label: p[3] || ""
+      };
+    });
+  }
+
+  function serializeMultiCamList() {
+    var rows = [];
+    $$(".mc-row").forEach(function (tr) {
+      var host  = tr.querySelector(".mc-host").value.trim();
+      var user  = tr.querySelector(".mc-user").value.trim();
+      var pass  = tr.querySelector(".mc-pass").value;
+      var label = tr.querySelector(".mc-label").value.trim();
+      if (host) rows.push(host + ":" + user + ":" + pass + ":" + label);
+    });
+    return rows.join("|");
+  }
+
+  function buildMultiCamTable(listStr) {
+    var cams = parseMultiCamList(listStr);
+    var tbody = $("multicam-tbody");
+    tbody.innerHTML = "";
+    cams.forEach(function (c) {
+      addMultiCamRow(c.host, c.user, c.pass, c.label);
+    });
+  }
+
+  function addMultiCamRow(host, user, pass, label) {
+    var tbody = $("multicam-tbody");
+    var tr = document.createElement("tr");
+    tr.className = "mc-row";
+    tr.innerHTML =
+      '<td><input type="text"     class="mc-host"  value="' + escHtml(host  || "") + '" placeholder="192.168.1.10"></td>' +
+      '<td><input type="text"     class="mc-user"  value="' + escHtml(user  || "root") + '" autocomplete="username"></td>' +
+      '<td><input type="password" class="mc-pass"  value="' + escHtml(pass  || "") + '" autocomplete="new-password" placeholder="password"></td>' +
+      '<td><input type="text"     class="mc-label" value="' + escHtml(label || "") + '" placeholder="e.g. Parking Lot"></td>' +
+      '<td>' +
+        '<button class="btn btn-ghost btn-small mc-test" type="button">Test</button>' +
+        '<span class="row-test-result"></span>' +
+      '</td>' +
+      '<td><button class="btn row-del" type="button" title="Remove">&times;</button></td>';
+    tbody.appendChild(tr);
+
+    tr.querySelector(".row-del").addEventListener("click", function () { tr.remove(); });
+
+    tr.querySelector(".mc-test").addEventListener("click", function () {
+      var h = tr.querySelector(".mc-host").value.trim();
+      var u = tr.querySelector(".mc-user").value.trim();
+      var p = tr.querySelector(".mc-pass").value;
+      var res = tr.querySelector(".row-test-result");
+      if (!h) { res.textContent = "enter host"; res.className = "row-test-result bad"; return; }
+      res.textContent = "\u2026";
+      res.className = "row-test-result busy";
+      cgi("test_multicam_snap", { method: "POST",
+            body: encField("host", h) + "&" + encField("user", u) + "&" + encField("pass", p) })
+        .then(function (r) {
+          res.textContent = r.ok ? "OK \u2713" : ("Fail " + (r.http_code || ""));
+          res.className = "row-test-result " + (r.ok ? "ok" : "bad");
+        })
+        .catch(function () { res.textContent = "fail"; res.className = "row-test-result bad"; });
+    });
+  }
+
+  function initMultiCam() {
+    $("multicam-add").addEventListener("click", function () {
+      addMultiCamRow("", "root", "", "");
     });
   }
 
@@ -976,6 +1062,7 @@
     initSaveButtons();
     initAlertButtons();
     initThresholdButtons();
+    initMultiCam();
     initOverlay();
     initSnapshots();
     initNotifications();

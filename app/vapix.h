@@ -45,4 +45,14 @@ int vapix_snapshot_to_file(const char *path,
                            const char *pass,
                            long *http_code_out);
 
+/* Same as vapix_snapshot_to_file but targets an arbitrary host instead of
+ * localhost.  host may include a port, e.g. "192.168.1.10" or
+ * "192.168.1.10:8080".  Used by the multi-camera snapshot module. */
+int vapix_snapshot_to_file_remote(const char *host,
+                                  const char *path,
+                                  const char *resolution,
+                                  const char *user,
+                                  const char *pass,
+                                  long *http_code_out);
+
 #endif /* VAPIX_H */
