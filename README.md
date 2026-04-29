@@ -2,7 +2,7 @@
 
 A native **ACAP** application for Axis cameras that turns any Axis device into a self-contained weather-alert radio — no server required.
 
-The app polls US weather data in real time, then drives **VAPIX virtual input ports**, an **on-video text overlay**, **JPEG snapshots**, **MQTT publishes**, **email notifications**, and **threshold-based condition alerts** so your camera can react to the weather just like it reacts to motion.
+The app polls US weather data in real time, then drives **VAPIX virtual input ports**, an **on-video text overlay**, **JPEG snapshots** (including from additional networked cameras), **MQTT publishes**, **email notifications**, **threshold-based condition alerts**, and **native AXIS camera events** — so your camera can react to the weather just like it reacts to motion.
 
 ---
 
@@ -19,6 +19,9 @@ The app polls US weather data in real time, then drives **VAPIX virtual input po
 | 7 | **Email notifications** | Sends plain-text email via SMTP/SMTPS (STARTTLS auto-negotiated); supports multiple recipients; optional on-clear emails |
 | 8 | **Webhook** | POSTs a JSON payload to any HTTP endpoint on alert transitions |
 | 9 | **History & diagnostics** | Alert history log, VAPIX/weather/webhook self-tests, manual port control, fire drill |
+| 10 | **Notification cool-down** | Per-type minimum interval between repeat email/MQTT/webhook/snapshot notifications (VAPIX ports always fire immediately) |
+| 11 | **Multi-camera snapshots** | Capture JPEG snapshots from up to 8 additional networked Axis cameras simultaneously on alert |
+| 12 | **Native AXIS events** | Publishes `Alert` (stateful) and `Conditions` (stateless) events into the camera's native AXIS event system via `axevent` — usable in Action Rules, ACS, and ONVIF subscriptions |
 
 Your VMS or the camera's own Action Rules can react to port changes to trigger recordings, audio clips, relay outputs, or any other action — exactly like a weather radio built into the camera.
 
@@ -62,11 +65,11 @@ Navigate to the app's built-in web page through the camera's app list. The storm
 |---|---|
 | **Dashboard** | Live conditions, active alerts, virtual port status, recent history |
 | **Location** | ZIP code, lat/lon override, weather provider, poll interval |
-| **Alerts & Triggers** | Map NWS alert types AND numeric thresholds to virtual input ports |
+| **Alerts & Triggers** | Map NWS alert types AND numeric thresholds to virtual input ports; notification cool-down settings |
 | **Overlay** | Toggle overlay, set position, customize the template |
-| **Snapshots** | Configure auto-capture on alert, gallery, on-demand capture, auto-delete limit |
+| **Snapshots** | Configure auto-capture on alert, gallery, on-demand capture, auto-delete limit, additional cameras |
 | **Diagnostics** | Self-tests, manual port control, fire drill, device info |
-| **Advanced** | System on/off, VAPIX credentials, webhook, MQTT, email, mock mode, backup/restore |
+| **Advanced** | System on/off, VAPIX credentials, webhook, MQTT, email, native AXIS events, mock mode, backup/restore |
 
 ### 3. Configure your location
 
@@ -239,6 +242,66 @@ Position options: top-left, top-right, bottom-left, bottom-right.
 
 ---
 
+## Notification cool-down
+
+By default, every alert transition (activate or clear) immediately fires all enabled notification channels — email, MQTT, webhook, and snapshots. For slowly-evolving alerts that stay active for hours, this can generate a flood of repeat notifications if the alert briefly expires and re-issues.
+
+**Cool-down settings (Alerts & Triggers tab → Notification Cool-down card):**
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| **NWS/threshold alert cool-down** | 10 min | Minimum minutes between repeat notifications for the same NWS alert event |
+| **Threshold cool-down** | 10 min | Same for threshold-rule transitions |
+
+Set either value to **0** to disable cool-down for that category.
+
+> **Note:** VAPIX virtual output ports are **always** fired immediately regardless of cool-down — the suppression only applies to email, MQTT, webhook, and snapshot channels. This preserves the integrity of VMS/Action Rule integrations.
+
+---
+
+## Multi-camera snapshots
+
+When an alert activates (or clears), the app can capture JPEG snapshots from up to **8 additional networked Axis cameras** simultaneously — beyond the local camera already captured by the Snapshots feature.
+
+**Configuration (Snapshots tab → Additional Cameras card):**
+
+1. Enable **Capture from additional cameras**
+2. Set the shared **Resolution** for all remote captures (independent from the local camera resolution)
+3. Add camera entries: **Host** (IP or hostname), **Username**, **Password**, and an optional **Label** shown in the filename
+
+Snapshot filenames include the label for easy identification:
+```
+alert_Tornado_Warning_20260428T142537Z_cam_192_168_1_101.jpg
+```
+
+All remote snapshots are saved to the same directory as local snapshots and count toward the **Max snapshots to keep** limit. The **Test** button on each row verifies connectivity and saves a test image before a real alert.
+
+> Remote cameras are accessed via VAPIX (`/axis-cgi/jpg/image.cgi`) over HTTP. Ensure network connectivity and that the camera credentials have viewer access.
+
+---
+
+## Native AXIS events
+
+In addition to VAPIX virtual input ports, the app publishes two native event types into the camera's AXIS event system via the `axevent` library. These events appear alongside built-in camera events and are usable in:
+- Camera **Action Rules** (System > Events)
+- **Axis Camera Station** / ACS Pro action rules
+- Any **ONVIF** event subscription client
+
+### Event types
+
+| Event | Type | Keys | When fired |
+|-------|------|------|------------|
+| **WeatherAlert** | Stateful (property) | `active` (bool), `alert_type` (string), `action` (string) | Every NWS or threshold alert activation and clearance |
+| **WeatherConditions** | Stateless (notification) | `temp_f` (double), `wind_mph` (double), `humidity_pct` (int), `description` (string) | Every poll cycle |
+
+The **WeatherAlert** event is stateful — its `active` property is set to `true` on activation and `false` on clearance, so Action Rules can trigger on both transitions independently. **WeatherConditions** is stateless and fires repeatedly; use it with numeric condition filters in Action Rules.
+
+> **Note:** Native events fire on every state change and are **not** subject to the notification cool-down. Toggle them off in **Advanced > Native AXIS Events** if needed.
+
+**Build requirement:** the `axevent` library (`axsdk/axevent.h`) must be present at compile time to enable this feature. When the library is absent, the daemon compiles cleanly with no-op stubs. Both pre-built `.eap` releases are compiled with axevent support.
+
+---
+
 ## Diagnostics & troubleshooting
 
 **Self-tests (Diagnostics tab):**
@@ -325,6 +388,9 @@ app/
   snapshot.c/h       JPEG capture via VAPIX + auto-delete (snapshot_prune)
   mqtt.c/h           MQTT publish via libcurl experimental MQTT support
   email.c/h          SMTP email via libcurl (RFC 2822, STARTTLS / SMTPS)
+  multicam.c/h       Multi-camera snapshot capture (up to 8 remote Axis cameras)
+  axisevents.c/h     Native AXIS event publishing via axevent (Alert + Conditions)
+  condhistory.c/h    Condition history ring buffer for dashboard sparklines
   cJSON.c/h          Bundled JSON parser (MIT — Dave Gamble)
   html/
     index.html       Single-page app shell (7 tabs)
