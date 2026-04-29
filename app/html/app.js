@@ -115,6 +115,7 @@
       $("f-webhook-url").value         = cfg.webhook_url || "";
       $("f-webhook-alerts-only").checked = (cfg.webhook_on_alerts_only || "").toLowerCase() === "yes";
       $("f-mock-mode").checked         = (cfg.mock_mode || "").toLowerCase() === "yes";
+      $("f-axis-events-enabled").checked = (cfg.axis_events_enabled || "yes").toLowerCase() === "yes";
       /* MQTT */
       $("f-mqtt-enabled").checked       = (cfg.mqtt_enabled || "").toLowerCase() === "yes";
       $("f-mqtt-broker").value          = cfg.mqtt_broker_url || "";
@@ -214,6 +215,7 @@
       pairs.push(encField("email_pass",      empw || "__SET__"));
       pairs.push(encField("email_on_clear",  $("f-email-on-clear").checked ? "yes" : "no"));
       pairs.push(encField("mock_mode",       $("f-mock-mode").checked ? "yes" : "no"));
+      pairs.push(encField("axis_events_enabled", $("f-axis-events-enabled").checked ? "yes" : "no"));
     }
     return pairs.join("&");
   }

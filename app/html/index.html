@@ -680,6 +680,30 @@
 
       <div class="card">
         <div class="card-header">
+          <h2>Native AXIS Events</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-axis-events-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>
+            Publish weather alerts and current conditions as native camera events via the AXIS
+            event system (axevent). Events appear in <strong>Action Rules</strong> under
+            <em>Applications &rarr; Weather Monitor ACAP</em> and are visible to Axis Camera
+            Station Pro and ONVIF subscribers. Virtual input port activation is unaffected.
+          </small>
+          <p class="hint" style="margin-top:0.6rem;">
+            <strong>Alert</strong> event fires on every NWS / threshold transition (stateful) &mdash;
+            <code>active</code>, <code>alert_type</code>, <code>action</code>.<br>
+            <strong>Conditions</strong> event fires on every successful poll (stateless) &mdash;
+            <code>temp_f</code>, <code>wind_mph</code>, <code>humidity_pct</code>, <code>description</code>.
+          </p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
           <h2>Mock mode</h2>
           <label class="switch">
             <input type="checkbox" id="f-mock-mode">

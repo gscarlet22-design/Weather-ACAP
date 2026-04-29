@@ -18,6 +18,7 @@
 #include "email.h"
 #include "threshold.h"
 #include "multicam.h"
+#include "axisevents.h"
 
 #include <curl/curl.h>
 #include <glib.h>
@@ -119,6 +120,10 @@ static void on_alert_transition(const char *event, const char *headline,
                                 const char *action, int port, void *ud) {
     (void)port;
     history_append(event, headline, action);
+
+    /* Sprint 9 — publish native AXIS event (not gated by cool-down:
+     * the event system should see every transition, same as VAPIX ports). */
+    axisevents_publish_alert(event, action, headline);
 
     TickCtx *ctx = (TickCtx *)ud;
     if (!ctx) return;
@@ -280,6 +285,8 @@ static const char *CONFIG_PARAMS[] = {
     "AlertCooldownMin", "ThresholdCooldownMin",
     /* Sprint 8 — multi-camera snapshot */
     "MultiCamEnabled", "MultiCamList", "MultiCamResolution",
+    /* Sprint 9 — native AXIS events */
+    "AxisEventsEnabled",
     NULL
 };
 
@@ -456,6 +463,10 @@ static gboolean do_poll(gpointer user_data) {
     char *mc_list    = params_get("MultiCamList");
     char *mc_res     = params_get("MultiCamResolution");
 
+    /* Sprint 9 — native AXIS events */
+    char *ax_ev_enabled = params_get("AxisEventsEnabled");
+    axisevents_set_enabled(ax_ev_enabled && strcasecmp(ax_ev_enabled, "yes") == 0);
+
     int is_mock = mock && strcasecmp(mock, "yes") == 0;
 
     WeatherSnapshot snap;
@@ -583,6 +594,9 @@ static gboolean do_poll(gpointer user_data) {
     /* Sprint 6 — conditions history (only when fetch succeeded) */
     if (ok) condhistory_append(&snap);
 
+    /* Sprint 9 — publish current conditions as a native AXIS event */
+    if (ok) axisevents_publish_conditions(&snap);
+
     /* Heartbeat */
     FILE *hb = fopen(HEARTBEAT_FILE, "w");
     if (hb) { fprintf(hb, "%ld\n", (long)time(NULL)); fclose(hb); }
@@ -599,6 +613,7 @@ static gboolean do_poll(gpointer user_data) {
     free(em_to); free(em_user); free(em_pass); free(em_on_clear);
     free(th_map);
     free(mc_enabled); free(mc_list); free(mc_res);
+    free(ax_ev_enabled);
 
     return G_SOURCE_CONTINUE;
 }
@@ -681,6 +696,10 @@ int main(void) {
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
+    /* Sprint 9 — initialise native AXIS event handler (before first poll
+     * so the events are declared before we try to send them). */
+    axisevents_init();
+
     /* Write PID and config file so the CGI can read them */
     write_pid_file();
     write_config_file();
@@ -717,6 +736,9 @@ int main(void) {
     alerts_clear_all(&map, vuser, vpass);
     overlay_delete(vuser, vpass);
     free(vuser); free(vpass); free(alertmap);
+
+    /* Sprint 9 — undeclare AXIS events and free handler */
+    axisevents_cleanup();
 
     params_cleanup();
     curl_global_cleanup();

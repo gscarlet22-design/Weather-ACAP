@@ -5,6 +5,9 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLIB    REQUIRED glib-2.0)
 pkg_check_modules(CURL    REQUIRED libcurl)
 pkg_check_modules(FCGI    REQUIRED fcgi)
+# Sprint 9 — optional axevent for native AXIS camera event publishing.
+# Not required; when absent, axisevents.c compiles to no-op stubs.
+pkg_check_modules(AXEVENT axevent)
 # axparameter intentionally not required — daemon uses file-based storage
 # (localdata/params.json) since AXIS OS 12 sandbox rejects ax_parameter_set.
 
@@ -24,6 +27,7 @@ set(SHARED_SRCS
     threshold.c
     condhistory.c
     multicam.c
+    axisevents.c
 )
 
 # ── Main daemon ──────────────────────────────────────────────────────────
@@ -38,13 +42,23 @@ target_include_directories(weather_acap PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${GLIB_INCLUDE_DIRS}
     ${CURL_INCLUDE_DIRS}
+    $<$<BOOL:${AXEVENT_FOUND}>:${AXEVENT_INCLUDE_DIRS}>
 )
 
 target_link_libraries(weather_acap PRIVATE
     ${GLIB_LIBRARIES}
     ${CURL_LIBRARIES}
+    $<$<BOOL:${AXEVENT_FOUND}>:${AXEVENT_LIBRARIES}>
     m
 )
+
+# Conditionally enable axevent support
+if(AXEVENT_FOUND)
+    target_compile_definitions(weather_acap PRIVATE HAVE_AXEVENT)
+    message(STATUS "axevent found — native AXIS events enabled")
+else()
+    message(STATUS "axevent NOT found — native AXIS events disabled (stubs)")
+endif()
 
 target_compile_options(weather_acap PRIVATE
     -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare

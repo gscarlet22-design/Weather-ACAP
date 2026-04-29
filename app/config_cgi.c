@@ -138,6 +138,8 @@ static const FieldMap FIELDS[] = {
     { "MultiCamEnabled",    "multicam_enabled",    "no"       },
     { "MultiCamList",       "multicam_list",       ""         },
     { "MultiCamResolution", "multicam_resolution", "1280x720" },
+    /* Sprint 9 — native AXIS events */
+    { "AxisEventsEnabled", "axis_events_enabled", "yes" },
     { NULL, NULL, NULL }
 };
 

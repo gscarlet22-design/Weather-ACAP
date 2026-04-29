@@ -21,6 +21,17 @@ CGI_PROG  = weather_acap.cgi
 # parameter X" error.  Storage is now a JSON file in localdata/.
 DAEMON_PKGS = glib-2.0 libcurl
 
+# Sprint 9 — optional axevent for native AXIS camera events.
+# When the SDK provides axevent (pkg-config name "axevent") we compile in
+# the full implementation; otherwise axisevents.c compiles to no-op stubs.
+AXEVENT_CFLAGS := $(shell pkg-config --cflags axevent 2>/dev/null)
+AXEVENT_LIBS   := $(shell pkg-config --libs   axevent 2>/dev/null)
+ifneq ($(AXEVENT_LIBS),)
+  AXEVENT_DEFINE = -DHAVE_AXEVENT
+else
+  AXEVENT_DEFINE =
+endif
+
 CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
 
 DAEMON_CFLAGS = $(shell pkg-config --cflags $(DAEMON_PKGS))
@@ -39,7 +50,7 @@ CGI_LDLIBS    = $(shell pkg-config --libs $(CGI_PKGS)) -lm
 MAIN_SRCS = weather_acap.c nws.c openmeteo.c weather_api.c \
             alerts.c overlay.c params.c cJSON.c \
             vapix.c history.c condhistory.c webhook.c snapshot.c \
-            mqtt.c email.c threshold.c multicam.c
+            mqtt.c email.c threshold.c multicam.c axisevents.c
 MAIN_OBJS = $(MAIN_SRCS:.c=.o)
 
 # CGI sources — no params.o (no axparameter), uses file-based config instead
@@ -55,10 +66,10 @@ all: $(MAIN_PROG) $(CGI_PROG)
 
 # ── Daemon objects (compiled with glib/axparameter flags) ────────────────
 $(MAIN_OBJS): %.o: %.c
-	$(CC) $(CFLAGS) $(DAEMON_CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DAEMON_CFLAGS) $(AXEVENT_CFLAGS) $(AXEVENT_DEFINE) -c -o $@ $<
 
 $(MAIN_PROG): $(MAIN_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(DAEMON_LDLIBS)
+	$(CC) $(CFLAGS) -o $@ $^ $(DAEMON_LDLIBS) $(AXEVENT_LIBS)
 
 # ── CGI objects (compiled with -DCGI_NO_CURL, linked against libfcgi) ───
 cgi_config_cgi.o: config_cgi.c
