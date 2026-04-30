@@ -71,6 +71,7 @@
               <div><label>Provider</label><span id="dash-provider">&mdash;</span></div>
               <div><label>Coordinates</label><span id="dash-coords">&mdash;</span></div>
               <div><label>Last poll</label><span id="dash-lastpoll">&mdash;</span></div>
+              <div><label>⚡ SPC Risk</label><span id="dash-lightning">&mdash;</span></div>
             </div>
           </div>
         </div>
@@ -286,6 +287,51 @@
           </div>
           <div class="row-actions">
             <button class="btn btn-primary" data-save="alerts" type="button">Save cool-down settings</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sprint 12 — Lightning / SPC convective outlook alerts -->
+      <div class="card" style="margin-top:1.2rem;">
+        <div class="card-header">
+          <h2>⚡ Lightning &amp; Thunderstorm Risk</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-lightning-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>
+            Checks the <a href="https://www.spc.noaa.gov/products/outlook/" target="_blank" rel="noopener">NOAA Storm Prediction Center</a>
+            Day-1 Convective Outlook and activates a virtual input port when your location falls within a thunderstorm or tornado risk area.
+            No API key required — uses SPC's free public GeoJSON feed.
+          </small>
+          <div class="form-grid-2" style="margin-top:1rem;">
+            <div class="form-row">
+              <label for="f-lightning-port">Virtual input port</label>
+              <input id="f-lightning-port" type="number" min="1" max="32" value="35" style="max-width:100px;">
+              <small>Port to activate when thunderstorm/tornado risk is detected.</small>
+            </div>
+            <div class="form-row">
+              <label for="f-lightning-min-risk">Minimum risk level</label>
+              <select id="f-lightning-min-risk">
+                <option value="1">1 — Any Thunderstorm (TSTM)</option>
+                <option value="2">2 — Marginal risk (MRGL+)</option>
+                <option value="3">3 — Slight risk (SLGT+)</option>
+                <option value="4">4 — Enhanced risk (ENH+)</option>
+                <option value="5">5 — Moderate risk (MDT+)</option>
+                <option value="6">6 — High risk only (HIGH)</option>
+              </select>
+              <small>Only activate the port at or above this SPC risk category.</small>
+            </div>
+            <div class="form-row">
+              <label for="f-lightning-poll-mult">Check every N poll cycles</label>
+              <input id="f-lightning-poll-mult" type="number" min="1" max="720" value="6" style="max-width:100px;">
+              <small>SPC updates ~hourly. At 5-minute polling, 6 cycles = every 30 min.</small>
+            </div>
+          </div>
+          <div class="row-actions">
+            <button class="btn btn-primary" data-save="alerts" type="button">Save lightning settings</button>
           </div>
         </div>
       </div>

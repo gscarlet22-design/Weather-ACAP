@@ -19,6 +19,7 @@
 #include "threshold.h"
 #include "multicam.h"
 #include "axisevents.h"
+#include "lightning.h"
 
 #include <curl/curl.h>
 #include <glib.h>
@@ -63,6 +64,10 @@ static void on_sigusr1(int sig) {
 typedef struct { char key[128]; time_t last_notif; } NotifRecord;
 static NotifRecord g_notif_history[NOTIF_HISTORY_MAX];
 static int         g_notif_n = 0;
+
+/* Sprint 12 — SPC lightning state */
+static int g_lightning_active  = 0;   /* 1 = port currently activated */
+static int g_lightning_tick    = 0;   /* poll-cycle counter */
 
 /* Returns 1 if the cool-down has elapsed (or no record exists yet) and
  * updates the record.  Returns 0 if still in cool-down. */
@@ -255,9 +260,13 @@ static void write_status(const WeatherSnapshot *snap,
 
     fprintf(f,
         "],\n"
+        "  \"lightning_risk\": \"%s\",\n"
+        "  \"lightning_risk_level\": %d,\n"
         "  \"overlay_text\": \"%s\",\n"
         "  \"last_error\": \"%s\"\n"
         "}\n",
+        snap->lightning_risk[0] ? snap->lightning_risk : "",
+        snap->lightning_risk_level,
         e_ov, e_err);
     fclose(f);
 }
@@ -289,6 +298,8 @@ static const char *CONFIG_PARAMS[] = {
     "MultiCamEnabled", "MultiCamList", "MultiCamResolution",
     /* Sprint 9 — native AXIS events */
     "AxisEventsEnabled",
+    /* Sprint 12 — lightning alerts */
+    "LightningEnabled", "LightningPort", "LightningMinRisk", "LightningPollMult",
     NULL
 };
 
@@ -470,6 +481,12 @@ static gboolean do_poll(gpointer user_data) {
     char *ax_ev_enabled = params_get("AxisEventsEnabled");
     axisevents_set_enabled(ax_ev_enabled && strcasecmp(ax_ev_enabled, "yes") == 0);
 
+    /* Sprint 12 — lightning alerts */
+    char *ln_enabled   = params_get("LightningEnabled");
+    int   ln_port      = params_get_int("LightningPort",     35);
+    int   ln_min_risk  = params_get_int("LightningMinRisk",   1);
+    int   ln_poll_mult = params_get_int("LightningPollMult",  6);
+
     int is_mock = mock && strcasecmp(mock, "yes") == 0;
 
     WeatherSnapshot snap;
@@ -601,6 +618,46 @@ static gboolean do_poll(gpointer user_data) {
     /* Sprint 9 — publish current conditions as a native AXIS event */
     if (ok) axisevents_publish_conditions(&snap);
 
+    /* Sprint 12 — SPC lightning / convective risk check */
+    if (ln_enabled && strcasecmp(ln_enabled, "yes") == 0 && snap.lat != 0.0) {
+        g_lightning_tick++;
+        if (g_lightning_tick % ln_poll_mult == 1 || g_lightning_tick == 1) {
+            LightningRisk risk = { "", 0 };
+            int res = lightning_check(snap.lat, snap.lon, &risk);
+            int at_risk = (res == 1 && risk.risk_level >= ln_min_risk);
+
+            /* Copy risk label into snapshot for overlay {lightning} token */
+            snprintf(snap.lightning_risk, sizeof(snap.lightning_risk),
+                     "%s", at_risk ? risk.label : "");
+            snap.lightning_risk_level = at_risk ? risk.risk_level : 0;
+
+            if (at_risk && !g_lightning_active) {
+                syslog(LOG_WARNING,
+                       "weather_acap: SPC lightning risk %s (level %d) — activating port %d",
+                       risk.label, risk.risk_level, ln_port);
+                vapix_port_set(ln_port, 1, vuser, vpass);
+                history_append("SPC Lightning Risk", lightning_risk_label(risk.risk_level),
+                               "activated");
+                g_lightning_active = 1;
+                /* Update status with lightning info */
+                write_status(&snap, overlay_text, video_present, last_error);
+            } else if (!at_risk && g_lightning_active) {
+                syslog(LOG_INFO,
+                       "weather_acap: SPC lightning risk cleared — deactivating port %d",
+                       ln_port);
+                vapix_port_set(ln_port, 0, vuser, vpass);
+                history_append("SPC Lightning Risk", "", "cleared");
+                g_lightning_active = 0;
+                write_status(&snap, overlay_text, video_present, last_error);
+            }
+        }
+    } else if (!(ln_enabled && strcasecmp(ln_enabled, "yes") == 0)
+               && g_lightning_active) {
+        /* Lightning disabled while port was active — clear it */
+        vapix_port_set(ln_port, 0, vuser, vpass);
+        g_lightning_active = 0;
+    }
+
     /* Heartbeat */
     FILE *hb = fopen(HEARTBEAT_FILE, "w");
     if (hb) { fprintf(hb, "%ld\n", (long)time(NULL)); fclose(hb); }
@@ -618,6 +675,7 @@ static gboolean do_poll(gpointer user_data) {
     free(th_map);
     free(mc_enabled); free(mc_list); free(mc_res);
     free(ax_ev_enabled);
+    free(ln_enabled);
 
     return G_SOURCE_CONTINUE;
 }

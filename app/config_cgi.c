@@ -141,6 +141,11 @@ static const FieldMap FIELDS[] = {
     { "MultiCamResolution", "multicam_resolution", "1280x720" },
     /* Sprint 9 — native AXIS events */
     { "AxisEventsEnabled", "axis_events_enabled", "yes" },
+    /* Sprint 12 — lightning / SPC convective outlook */
+    { "LightningEnabled",  "lightning_enabled",   "no"  },
+    { "LightningPort",     "lightning_port",       "35"  },
+    { "LightningMinRisk",  "lightning_min_risk",   "1"   },
+    { "LightningPollMult", "lightning_poll_mult",  "6"   },
     { NULL, NULL, NULL }
 };
 
