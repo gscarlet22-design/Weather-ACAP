@@ -570,7 +570,7 @@
           </label>
         </div>
         <div class="card-body">
-          <small>POST a JSON payload to any URL when an alert activates or clears. Great for MQTT bridges, Slack webhooks, or calling an Axis Camera Station Pro event endpoint.</small>
+          <small>POST a payload to any URL when an alert activates or clears. Supports custom templates for Slack, Discord, Teams, and Home Assistant.</small>
           <div class="form-row">
             <label for="f-webhook-url">URL</label>
             <input id="f-webhook-url" type="url" placeholder="https://hooks.example.com/weather">
@@ -580,6 +580,20 @@
               <input id="f-webhook-alerts-only" type="checkbox">
               <span>Only POST for alert transitions (skip routine polls)</span>
             </label>
+          </div>
+          <div class="form-row">
+            <label for="f-webhook-template">Payload template</label>
+            <div class="webhook-preset-bar">
+              <span class="preset-label">Presets:</span>
+              <button class="btn btn-ghost btn-small" id="wh-preset-slack"    type="button">Slack</button>
+              <button class="btn btn-ghost btn-small" id="wh-preset-discord"  type="button">Discord</button>
+              <button class="btn btn-ghost btn-small" id="wh-preset-teams"    type="button">Teams</button>
+              <button class="btn btn-ghost btn-small" id="wh-preset-ha"       type="button">Home Assistant</button>
+              <button class="btn btn-ghost btn-small" id="wh-preset-clear"    type="button">Clear (use default)</button>
+            </div>
+            <textarea id="f-webhook-template" rows="5" spellcheck="false"
+              placeholder="Leave blank to use the built-in JSON payload.&#10;Tokens: {timestamp} {event_type} {alert_type} {headline} {temp_f} {wind_mph} {humidity_pct} {description} {active_count}"></textarea>
+            <small>When blank, the default JSON body is sent. Set a template to customise for your service.</small>
           </div>
         </div>
       </div>

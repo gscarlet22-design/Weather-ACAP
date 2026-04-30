@@ -366,6 +366,25 @@ html, body {
 }
 .wind-arrow.hidden { display: none; }
 
+/* ── Sprint 11 — Webhook preset bar ─────────────────────────────────────── */
+.webhook-preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.webhook-preset-bar .preset-label {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-right: 0.15rem;
+}
+#f-webhook-template {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  resize: vertical;
+}
+
 /* ── Ports grid ──────────────────────────────────────────────────────────── */
 .ports-grid {
   display: grid;

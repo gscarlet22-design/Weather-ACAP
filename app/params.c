@@ -77,6 +77,7 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     { "WebhookEnabled",      "no" },
     { "WebhookUrl",          "" },
     { "WebhookOnAlertsOnly", "yes" },
+    { "WebhookTemplate",     "" },   /* "" = use built-in JSON; non-empty = render template */
 
     /* VAPIX localhost auth */
     { "VapixUser",  "root" },
