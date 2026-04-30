@@ -635,7 +635,7 @@ static gboolean do_poll(gpointer user_data) {
                 syslog(LOG_WARNING,
                        "weather_acap: SPC lightning risk %s (level %d) — activating port %d",
                        risk.label, risk.risk_level, ln_port);
-                vapix_set_virtual_input(ln_port, 1, vuser, vpass);
+                vapix_port_set(ln_port, 1, vuser, vpass);
                 history_append("SPC Lightning Risk", lightning_risk_label(risk.risk_level),
                                "activated");
                 g_lightning_active = 1;
@@ -645,7 +645,7 @@ static gboolean do_poll(gpointer user_data) {
                 syslog(LOG_INFO,
                        "weather_acap: SPC lightning risk cleared — deactivating port %d",
                        ln_port);
-                vapix_set_virtual_input(ln_port, 0, vuser, vpass);
+                vapix_port_set(ln_port, 0, vuser, vpass);
                 history_append("SPC Lightning Risk", "", "cleared");
                 g_lightning_active = 0;
                 write_status(&snap, overlay_text, video_present, last_error);
@@ -654,7 +654,7 @@ static gboolean do_poll(gpointer user_data) {
     } else if (!(ln_enabled && strcasecmp(ln_enabled, "yes") == 0)
                && g_lightning_active) {
         /* Lightning disabled while port was active — clear it */
-        vapix_set_virtual_input(ln_port, 0, vuser, vpass);
+        vapix_port_set(ln_port, 0, vuser, vpass);
         g_lightning_active = 0;
     }
 
