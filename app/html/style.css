@@ -313,6 +313,59 @@ html, body {
   50%      { box-shadow: 0 0 18px rgba(239,83,80,0.35); }
 }
 
+/* ── Sprint 10 — MockMode banner ─────────────────────────────────────────── */
+.mock-banner {
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  width: 100%;
+  padding: 0.55rem 1.5rem;
+  background: linear-gradient(90deg, #f57f17, #fbc02d);
+  color: #1a1000;
+  font-weight: 700;
+  font-size: 0.9rem;
+  text-align: center;
+  letter-spacing: 0.02em;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.mock-banner.hidden { display: none; }
+
+/* ── Sprint 10 — Severity badges ─────────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 0.4rem;
+  vertical-align: middle;
+}
+.badge-warning   { background: rgba(239, 83, 80, 0.22); color: #ff8a80; border: 1px solid rgba(239,83,80,0.45); }
+.badge-watch     { background: rgba(255,183, 77, 0.22); color: #ffd180; border: 1px solid rgba(255,183,77,0.45); }
+.badge-advisory  { background: rgba(100,181,246, 0.18); color: #82b1ff; border: 1px solid rgba(100,181,246,0.35); }
+.badge-threshold { background: rgba(255,138, 77, 0.22); color: #ffab40; border: 1px solid rgba(255,138,77,0.45); }
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,83,80,0.6); }
+  50%       { box-shadow: 0 0 0 4px rgba(239,83,80,0); }
+}
+.badge-warning.badge-tornado {
+  animation: pulse-red 1.4s ease-in-out infinite;
+}
+
+/* ── Sprint 10 — Wind direction compass arrow ────────────────────────────── */
+.wind-arrow {
+  display: inline-block;
+  font-size: 1rem;
+  line-height: 1;
+  transition: transform 0.5s ease;
+  color: var(--accent);
+  vertical-align: middle;
+}
+.wind-arrow.hidden { display: none; }
+
 /* ── Ports grid ──────────────────────────────────────────────────────────── */
 .ports-grid {
   display: grid;

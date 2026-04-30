@@ -9,6 +9,11 @@
 <body>
   <div class="sky-backdrop"></div>
 
+  <!-- Sprint 10 — MockMode banner (hidden unless mock_mode=yes) -->
+  <div id="mock-banner" class="mock-banner hidden" role="alert">
+    ⚠ MOCK MODE ACTIVE — weather data is simulated. Disable in the Advanced tab.
+  </div>
+
   <header class="app-header">
     <div class="brand">
       <svg class="brand-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
@@ -61,7 +66,7 @@
             </div>
             <div class="sub-stats">
               <div><label>Conditions</label><span id="dash-desc">&mdash;</span></div>
-              <div><label>Wind</label><span id="dash-wind">&mdash;</span></div>
+              <div><label>Wind</label><span id="dash-wind">&mdash;</span> <span id="dash-wind-arrow" class="wind-arrow hidden" aria-hidden="true">↑</span></div>
               <div><label>Humidity</label><span id="dash-hum">&mdash;</span></div>
               <div><label>Provider</label><span id="dash-provider">&mdash;</span></div>
               <div><label>Coordinates</label><span id="dash-coords">&mdash;</span></div>
