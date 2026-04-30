@@ -780,6 +780,26 @@
         </div>
       </div>
 
+      <!-- Sprint 13 — Structured JSON Logging -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Structured JSON Logging</h2>
+          <label class="switch">
+            <input type="checkbox" id="f-json-logging">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>
+            When enabled, the daemon also writes structured JSON log lines to <code>stderr</code>
+            alongside standard syslog entries. Each line is a JSON object:
+            <code>{"ts":"…","level":"info","app":"weather_acap","msg":"…"}</code><br>
+            Useful for ingestion by <strong>Loki</strong>, <strong>Splunk</strong>,
+            <strong>Datadog</strong>, or any JSON log aggregator that reads the device syslog stream.
+          </small>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-header"><h2>Backup &amp; restore</h2></div>
         <div class="card-body">

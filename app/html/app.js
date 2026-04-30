@@ -117,6 +117,7 @@
       $("f-webhook-template").value    = cfg.webhook_template || "";
       $("f-mock-mode").checked         = (cfg.mock_mode || "").toLowerCase() === "yes";
       $("f-axis-events-enabled").checked = (cfg.axis_events_enabled || "yes").toLowerCase() === "yes";
+      $("f-json-logging").checked      = (cfg.json_logging || "").toLowerCase() === "yes";
       /* Sprint 10 — MockMode banner */
       var banner = $("mock-banner");
       if (banner) {
@@ -232,8 +233,9 @@
       var empw = $("f-email-pass").value;
       pairs.push(encField("email_pass",      empw || "__SET__"));
       pairs.push(encField("email_on_clear",  $("f-email-on-clear").checked ? "yes" : "no"));
-      pairs.push(encField("mock_mode",       $("f-mock-mode").checked ? "yes" : "no"));
+      pairs.push(encField("mock_mode",           $("f-mock-mode").checked ? "yes" : "no"));
       pairs.push(encField("axis_events_enabled", $("f-axis-events-enabled").checked ? "yes" : "no"));
+      pairs.push(encField("json_logging",        $("f-json-logging").checked ? "yes" : "no"));
     }
     return pairs.join("&");
   }

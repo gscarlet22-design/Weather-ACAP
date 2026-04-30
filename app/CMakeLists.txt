@@ -29,6 +29,7 @@ set(SHARED_SRCS
     multicam.c
     axisevents.c
     lightning.c
+    jsonlog.c
 )
 
 # ── Main daemon ──────────────────────────────────────────────────────────
