@@ -138,12 +138,34 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     { "LightningMinRisk",  "1"   },   /* 1=any TSTM; 2=MRGL+; 3=SLGT+; etc. */
     { "LightningPollMult", "6"   },   /* check SPC every N poll cycles */
 
+    /* Sprint 14 — Hardware alert output */
+    /* Speaker display (Axis C1710 / C1720) */
+    { "DisplayAlertEnabled",  "no"      },
+    { "DisplayAlertDuration", "30"      },   /* seconds */
+    { "DisplayAlertTextColor","#FFFFFF" },
+    { "DisplayAlertBgWarning","#CC0000" },   /* red for Warning tier */
+    { "DisplayAlertBgWatch",  "#FF8800" },   /* amber for Watch tier */
+    /* Local strobe (C1710 / C1720 siren_and_light.cgi) */
+    { "StrobeAlertEnabled",   "no"  },
+    { "StrobeAlertDuration",  "30"  },   /* seconds */
+    /* D4200 Network Horn — remote named profile */
+    { "D4200Enabled",         "no"      },
+    { "D4200Host",            ""        },   /* IP or hostname, no scheme */
+    { "D4200User",            "root"    },
+    { "D4200Pass",            ""        },
+    { "D4200WarningProfile",  "emergency" },
+    { "D4200WatchProfile",    "caution"   },
+    /* Audio clip via mediaclip.cgi */
+    { "AudioAlertEnabled",    "no" },
+    { "AudioClipWarning",     "-1" },   /* clip ID; -1 = disabled */
+    { "AudioClipWatch",       "-1" },
+
     { NULL, NULL }
 };
 
 /* In-memory store — flat array sized to the number of defaults.  Every
  * known key has a slot from init time onwards; values are heap-owned. */
-#define STORE_MAX 64
+#define STORE_MAX 96
 typedef struct { char *name; char *value; } Slot;
 static Slot g_store[STORE_MAX];
 static int  g_store_n = 0;

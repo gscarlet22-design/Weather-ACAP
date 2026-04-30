@@ -162,6 +162,24 @@
       $("f-lightning-port").value       = cfg.lightning_port || "35";
       $("f-lightning-min-risk").value   = cfg.lightning_min_risk || "1";
       $("f-lightning-poll-mult").value  = cfg.lightning_poll_mult || "6";
+      /* Hardware Output settings (Sprint 14) */
+      $("f-display-alert-enabled").checked      = (cfg.display_alert_enabled || "").toLowerCase() === "yes";
+      $("f-display-alert-duration").value        = cfg.display_alert_duration || "30";
+      syncColorPair("f-display-alert-text-color",  cfg.display_alert_text_color  || "#FFFFFF");
+      syncColorPair("f-display-alert-bg-warning",  cfg.display_alert_bg_warning  || "#CC0000");
+      syncColorPair("f-display-alert-bg-watch",    cfg.display_alert_bg_watch    || "#FF8800");
+      $("f-strobe-alert-enabled").checked        = (cfg.strobe_alert_enabled || "").toLowerCase() === "yes";
+      $("f-strobe-alert-duration").value          = cfg.strobe_alert_duration || "30";
+      $("f-d4200-enabled").checked                = (cfg.d4200_enabled || "").toLowerCase() === "yes";
+      $("f-d4200-host").value                     = cfg.d4200_host || "";
+      $("f-d4200-user").value                     = cfg.d4200_user || "root";
+      $("f-d4200-pass").value                     = "";
+      $("f-d4200-pass").placeholder               = cfg.d4200_pass === "__SET__" ? "(unchanged)" : "(not set)";
+      $("f-d4200-warning-profile").value          = cfg.d4200_warning_profile || "emergency";
+      $("f-d4200-watch-profile").value            = cfg.d4200_watch_profile   || "caution";
+      $("f-audio-alert-enabled").checked          = (cfg.audio_alert_enabled || "").toLowerCase() === "yes";
+      $("f-audio-clip-warning").value             = cfg.audio_clip_warning !== undefined ? cfg.audio_clip_warning : "-1";
+      $("f-audio-clip-watch").value               = cfg.audio_clip_watch   !== undefined ? cfg.audio_clip_watch   : "-1";
       /* Multi-camera settings (Sprint 8) */
       $("f-multicam-enabled").checked  = (cfg.multicam_enabled || "").toLowerCase() === "yes";
       $("f-multicam-resolution").value = cfg.multicam_resolution || "1280x720";
@@ -206,6 +224,25 @@
       pairs.push(encField("multicam_enabled",    $("f-multicam-enabled").checked ? "yes" : "no"));
       pairs.push(encField("multicam_resolution", $("f-multicam-resolution").value));
       pairs.push(encField("multicam_list",       serializeMultiCamList()));
+    } else if (section === "hardware") {
+      /* Sprint 14 — hardware alert output */
+      pairs.push(encField("display_alert_enabled",   $("f-display-alert-enabled").checked   ? "yes" : "no"));
+      pairs.push(encField("display_alert_duration",  $("f-display-alert-duration").value    || "30"));
+      pairs.push(encField("display_alert_text_color",$("f-display-alert-text-color-hex").value.trim() || "#FFFFFF"));
+      pairs.push(encField("display_alert_bg_warning",$("f-display-alert-bg-warning-hex").value.trim() || "#CC0000"));
+      pairs.push(encField("display_alert_bg_watch",  $("f-display-alert-bg-watch-hex").value.trim()   || "#FF8800"));
+      pairs.push(encField("strobe_alert_enabled",    $("f-strobe-alert-enabled").checked    ? "yes" : "no"));
+      pairs.push(encField("strobe_alert_duration",   $("f-strobe-alert-duration").value     || "30"));
+      pairs.push(encField("d4200_enabled",           $("f-d4200-enabled").checked           ? "yes" : "no"));
+      pairs.push(encField("d4200_host",              $("f-d4200-host").value.trim()));
+      pairs.push(encField("d4200_user",              $("f-d4200-user").value.trim()));
+      var d4pw = $("f-d4200-pass").value;
+      pairs.push(encField("d4200_pass",              d4pw || "__SET__"));
+      pairs.push(encField("d4200_warning_profile",   $("f-d4200-warning-profile").value.trim() || "emergency"));
+      pairs.push(encField("d4200_watch_profile",     $("f-d4200-watch-profile").value.trim()   || "caution"));
+      pairs.push(encField("audio_alert_enabled",     $("f-audio-alert-enabled").checked     ? "yes" : "no"));
+      pairs.push(encField("audio_clip_warning",      $("f-audio-clip-warning").value        || "-1"));
+      pairs.push(encField("audio_clip_watch",        $("f-audio-clip-watch").value          || "-1"));
     } else if (section === "advanced") {
       pairs.push(encField("system_enabled",          $("f-system-enabled").checked ? "yes" : "no"));
       pairs.push(encField("vapix_user",              $("f-vapix-user").value.trim()));
@@ -1161,6 +1198,109 @@
     wire("wh-preset-clear",   "");
   }
 
+  /* ── Sprint 14: Hardware Output tab ─────────────────────────────────────── */
+
+  /* Keep a native color-picker and its hex text sibling in sync.
+   * colorPickerId must have a corresponding <id>-hex text sibling. */
+  function syncColorPair(colorPickerId, hexValue) {
+    var picker = $(colorPickerId);
+    var hex    = $(colorPickerId + "-hex");
+    if (!picker || !hex) return;
+    var v = hexValue || "#FFFFFF";
+    picker.value = v;
+    hex.value    = v;
+  }
+
+  function bindColorPair(colorPickerId) {
+    var picker = $(colorPickerId);
+    var hex    = $(colorPickerId + "-hex");
+    if (!picker || !hex) return;
+    picker.addEventListener("input", function () { hex.value = picker.value; });
+    hex.addEventListener("input", function () {
+      var v = hex.value.trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(v)) picker.value = v;
+    });
+  }
+
+  function initHardwareOutput() {
+    /* Wire color pickers ↔ hex inputs */
+    bindColorPair("f-display-alert-text-color");
+    bindColorPair("f-display-alert-bg-warning");
+    bindColorPair("f-display-alert-bg-watch");
+
+    /* Test display */
+    $("hw-test-display").addEventListener("click", function () {
+      var res = $("hw-result-display");
+      res.textContent = "Sending\u2026"; res.className = "diag-result busy";
+      cgi("test_display", { method: "POST", body: "" })
+        .then(function (r) {
+          res.textContent = r.msg || (r.ok ? "Sent" : "Failed");
+          res.className = "diag-result " + (r.ok ? "ok" : "bad");
+        })
+        .catch(function (e) { res.textContent = "Error: " + e.message; res.className = "diag-result bad"; });
+    });
+
+    /* Test strobe — Warning */
+    $("hw-test-strobe-warn").addEventListener("click", function () {
+      var res = $("hw-result-strobe");
+      res.textContent = "Starting red strobe\u2026"; res.className = "diag-result busy";
+      cgi("test_strobe", { method: "POST", body: "tier=warning" })
+        .then(function (r) {
+          res.textContent = r.msg || (r.ok ? "Sent" : "Failed");
+          res.className = "diag-result " + (r.ok ? "ok" : "bad");
+        })
+        .catch(function (e) { res.textContent = "Error: " + e.message; res.className = "diag-result bad"; });
+    });
+
+    /* Test strobe — Watch */
+    $("hw-test-strobe-watch").addEventListener("click", function () {
+      var res = $("hw-result-strobe");
+      res.textContent = "Starting amber strobe\u2026"; res.className = "diag-result busy";
+      cgi("test_strobe", { method: "POST", body: "tier=watch" })
+        .then(function (r) {
+          res.textContent = r.msg || (r.ok ? "Sent" : "Failed");
+          res.className = "diag-result " + (r.ok ? "ok" : "bad");
+        })
+        .catch(function (e) { res.textContent = "Error: " + e.message; res.className = "diag-result bad"; });
+    });
+
+    /* Test D4200 */
+    $("hw-test-d4200").addEventListener("click", function () {
+      var res = $("hw-result-d4200");
+      res.textContent = "Sending profile start\u2026"; res.className = "diag-result busy";
+      cgi("test_d4200", { method: "POST", body: "" })
+        .then(function (r) {
+          res.textContent = r.msg || (r.ok ? "Sent" : "Failed");
+          res.className = "diag-result " + (r.ok ? "ok" : "bad");
+        })
+        .catch(function (e) { res.textContent = "Error: " + e.message; res.className = "diag-result bad"; });
+    });
+
+    /* Test audio — Warning clip */
+    $("hw-test-audio-warn").addEventListener("click", function () {
+      var res = $("hw-result-audio");
+      res.textContent = "Playing Warning clip\u2026"; res.className = "diag-result busy";
+      cgi("test_audio", { method: "POST", qs: "tier=warning", body: "" })
+        .then(function (r) {
+          res.textContent = r.msg || (r.ok ? "Sent" : "Failed");
+          res.className = "diag-result " + (r.ok ? "ok" : "bad");
+        })
+        .catch(function (e) { res.textContent = "Error: " + e.message; res.className = "diag-result bad"; });
+    });
+
+    /* Test audio — Watch clip */
+    $("hw-test-audio-watch").addEventListener("click", function () {
+      var res = $("hw-result-audio");
+      res.textContent = "Playing Watch clip\u2026"; res.className = "diag-result busy";
+      cgi("test_audio", { method: "POST", qs: "tier=watch", body: "" })
+        .then(function (r) {
+          res.textContent = r.msg || (r.ok ? "Sent" : "Failed");
+          res.className = "diag-result " + (r.ok ? "ok" : "bad");
+        })
+        .catch(function (e) { res.textContent = "Error: " + e.message; res.className = "diag-result bad"; });
+    });
+  }
+
   /* ── Boot ────────────────────────────────────────────────────────────────── */
   function init() {
     initTabs();
@@ -1172,6 +1312,7 @@
     initOverlay();
     initSnapshots();
     initNotifications();
+    initHardwareOutput();
     initDiagnostics();
     initDeviceRefresh();
     initExportImport();

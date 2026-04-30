@@ -34,6 +34,7 @@
 #include "email.h"
 #include "threshold.h"
 #include "multicam.h"
+#include "alertoutput.h"
 
 #include <fcgiapp.h>
 
@@ -148,6 +149,23 @@ static const FieldMap FIELDS[] = {
     { "LightningPort",     "lightning_port",       "35"  },
     { "LightningMinRisk",  "lightning_min_risk",   "1"   },
     { "LightningPollMult", "lightning_poll_mult",  "6"   },
+    /* Sprint 14 — hardware alert output */
+    { "DisplayAlertEnabled",  "display_alert_enabled",   "no"      },
+    { "DisplayAlertDuration", "display_alert_duration",  "30"      },
+    { "DisplayAlertTextColor","display_alert_text_color","#FFFFFF"  },
+    { "DisplayAlertBgWarning","display_alert_bg_warning","#CC0000"  },
+    { "DisplayAlertBgWatch",  "display_alert_bg_watch",  "#FF8800"  },
+    { "StrobeAlertEnabled",   "strobe_alert_enabled",    "no"      },
+    { "StrobeAlertDuration",  "strobe_alert_duration",   "30"      },
+    { "D4200Enabled",         "d4200_enabled",           "no"      },
+    { "D4200Host",            "d4200_host",              ""        },
+    { "D4200User",            "d4200_user",              "root"    },
+    { "D4200Pass",            "d4200_pass",              ""        },
+    { "D4200WarningProfile",  "d4200_warning_profile",   "emergency"},
+    { "D4200WatchProfile",    "d4200_watch_profile",     "caution"  },
+    { "AudioAlertEnabled",    "audio_alert_enabled",     "no"      },
+    { "AudioClipWarning",     "audio_clip_warning",      "-1"      },
+    { "AudioClipWatch",       "audio_clip_watch",        "-1"      },
     { NULL, NULL, NULL }
 };
 
@@ -1187,6 +1205,130 @@ static void endpoint_test_multicam_snap(const char *body) {
                rc == 0 ? "true" : "false", http_code);
 }
 
+/* ── Sprint 14: hardware output test endpoints ─────────────────────────── */
+
+/* Build an AlertOutputConfig from current params, all channels enabled so
+ * the test fires regardless of the per-channel toggle.                     */
+static AlertOutputConfig build_test_alertout_cfg(void) {
+    AlertOutputConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    char *dur_s  = cfg_get("DisplayAlertDuration");
+    char *tc     = cfg_get("DisplayAlertTextColor");
+    char *bgw    = cfg_get("DisplayAlertBgWarning");
+    char *bgwt   = cfg_get("DisplayAlertBgWatch");
+    char *sdur_s = cfg_get("StrobeAlertDuration");
+    char *d4host = cfg_get("D4200Host");
+    char *d4user = cfg_get("D4200User");
+    char *d4pass = cfg_get("D4200Pass");
+    char *d4wpro = cfg_get("D4200WarningProfile");
+    char *d4wtpro= cfg_get("D4200WatchProfile");
+    char *vuser  = cfg_get("VapixUser");
+    char *vpass  = cfg_get("VapixPass");
+
+    cfg.display_enabled    = 1;
+    cfg.display_duration_s = (dur_s && *dur_s) ? atoi(dur_s) : 30;
+    snprintf(cfg.display_text_color, 16, "%s", (tc   && *tc)  ? tc   : "#FFFFFF");
+    snprintf(cfg.display_bg_warning, 16, "%s", (bgw  && *bgw) ? bgw  : "#CC0000");
+    snprintf(cfg.display_bg_watch,   16, "%s", (bgwt && *bgwt)? bgwt : "#FF8800");
+
+    cfg.strobe_enabled    = 1;
+    cfg.strobe_duration_s = (sdur_s && *sdur_s) ? atoi(sdur_s) : 10;  /* short for test */
+
+    cfg.d4200_enabled = 1;
+    snprintf(cfg.d4200_host,            128, "%s", d4host  ? d4host  : "");
+    snprintf(cfg.d4200_user,             64, "%s", d4user  ? d4user  : "root");
+    snprintf(cfg.d4200_pass,             64, "%s", d4pass  ? d4pass  : "");
+    snprintf(cfg.d4200_warning_profile,  64, "%s", d4wpro  ? d4wpro  : "emergency");
+    snprintf(cfg.d4200_watch_profile,    64, "%s", d4wtpro ? d4wtpro : "caution");
+
+    cfg.audio_enabled = 1;
+
+    /* Static storage for credentials — these live for the duration of the
+     * endpoint call, which is synchronous, so the pointers stay valid. */
+    static char s_vuser[64], s_vpass[64];
+    snprintf(s_vuser, sizeof(s_vuser), "%s", vuser ? vuser : "root");
+    snprintf(s_vpass, sizeof(s_vpass), "%s", vpass ? vpass : "");
+    cfg.vapix_user = s_vuser;
+    cfg.vapix_pass = s_vpass;
+
+    free(dur_s); free(tc); free(bgw); free(bgwt); free(sdur_s);
+    free(d4host); free(d4user); free(d4pass); free(d4wpro); free(d4wtpro);
+    free(vuser); free(vpass);
+    return cfg;
+}
+
+static void endpoint_test_display(void) {
+    AlertOutputConfig cfg = build_test_alertout_cfg();
+    cfg.strobe_enabled = 0;
+    cfg.d4200_enabled  = 0;
+    cfg.audio_enabled  = 0;
+    alertoutput_on_activate("Tornado Warning",
+                             "!! Test — Weather ACAP display check !!",
+                             &cfg);
+    json_header();
+    out_puts("{\"ok\":true,\"msg\":\"Display notification sent\"}\n");
+}
+
+static void endpoint_test_strobe(void) {
+    AlertOutputConfig cfg = build_test_alertout_cfg();
+    cfg.display_enabled = 0;
+    cfg.d4200_enabled   = 0;
+    cfg.audio_enabled   = 0;
+    cfg.strobe_duration_s = 5;   /* short test burst */
+    alertoutput_on_activate("Tornado Warning", NULL, &cfg);
+    json_header();
+    out_puts("{\"ok\":true,\"msg\":\"Strobe start sent (5 s)\"}\n");
+}
+
+static void endpoint_test_d4200(void) {
+    AlertOutputConfig cfg = build_test_alertout_cfg();
+    cfg.display_enabled = 0;
+    cfg.strobe_enabled  = 0;
+    cfg.audio_enabled   = 0;
+    if (!cfg.d4200_host[0]) {
+        json_header();
+        out_puts("{\"ok\":false,\"msg\":\"D4200Host not configured\"}\n");
+        return;
+    }
+    alertoutput_on_activate("Tornado Warning", NULL, &cfg);
+    json_header();
+    out_printf("{\"ok\":true,\"msg\":\"D4200 profile '%s' start sent\"}\n",
+               cfg.d4200_warning_profile);
+}
+
+static void endpoint_test_audio(const char *qs) {
+    KV kv[4] = {0};
+    int n = parse_kv(qs, kv, 4);
+    const char *tier_s = get_kv(kv, n, "tier");   /* "warning" or "watch" */
+    int warning = !tier_s || strcmp(tier_s, "watch") != 0;
+    free_kv(kv, n);
+
+    char *clipw_s = cfg_get("AudioClipWarning");
+    char *clipwt_s= cfg_get("AudioClipWatch");
+    int   clipw   = (clipw_s  && *clipw_s)  ? atoi(clipw_s)  : -1;
+    int   clipwt  = (clipwt_s && *clipwt_s) ? atoi(clipwt_s) : -1;
+    free(clipw_s); free(clipwt_s);
+
+    int clip = warning ? clipw : clipwt;
+    if (clip < 0) {
+        json_header();
+        out_printf("{\"ok\":false,\"msg\":\"Clip ID not configured (value=%d)\"}\n", clip);
+        return;
+    }
+
+    AlertOutputConfig cfg = build_test_alertout_cfg();
+    cfg.display_enabled  = 0;
+    cfg.strobe_enabled   = 0;
+    cfg.d4200_enabled    = 0;
+    cfg.audio_clip_warning = clipw;
+    cfg.audio_clip_watch   = clipwt;
+    alertoutput_on_activate(warning ? "Tornado Warning" : "Tornado Watch", NULL, &cfg);
+
+    json_header();
+    out_printf("{\"ok\":true,\"msg\":\"Audio play sent for clip %d\"}\n", clip);
+}
+
 /* Read the POST body from the FastCGI input stream (not stdin). */
 static char *read_post_body(void) {
     const char *cl_str = FCGX_GetParam("CONTENT_LENGTH", g_req.envp);
@@ -1263,6 +1405,11 @@ static void handle_request(void) {
         endpoint_test_multicam_snap(body ? body : "");
         free(body);
     }
+    /* Sprint 14 — hardware output tests */
+    else if (strcmp(action, "test_display") == 0 && is_post) endpoint_test_display();
+    else if (strcmp(action, "test_strobe")  == 0 && is_post) endpoint_test_strobe();
+    else if (strcmp(action, "test_d4200")   == 0 && is_post) endpoint_test_d4200();
+    else if (strcmp(action, "test_audio")   == 0 && is_post) endpoint_test_audio(qs);
     else {
         err_json("unknown action or wrong method");
     }

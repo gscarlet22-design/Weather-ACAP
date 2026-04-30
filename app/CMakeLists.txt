@@ -30,6 +30,7 @@ set(SHARED_SRCS
     axisevents.c
     lightning.c
     jsonlog.c
+    alertoutput.c
 )
 
 # ── Main daemon ──────────────────────────────────────────────────────────

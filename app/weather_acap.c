@@ -21,6 +21,7 @@
 #include "axisevents.h"
 #include "lightning.h"
 #include "jsonlog.h"
+#include "alertoutput.h"
 
 #include <curl/curl.h>
 #include <glib.h>
@@ -121,6 +122,8 @@ typedef struct {
     /* Sprint 8 — multi-camera snapshot */
     MultiCamConfig multicam_cfg;
     const char    *multicam_resolution;
+    /* Sprint 14 — hardware alert output (display, strobe, D4200, audio) */
+    AlertOutputConfig alertout_cfg;
 } TickCtx;
 
 static void on_alert_transition(const char *event, const char *headline,
@@ -184,6 +187,13 @@ static void on_alert_transition(const char *event, const char *headline,
         jlog(LOG_INFO,
                "cooldown: suppressed notifications for %s/%s (%d min hold-off)",
                event ? event : "?", action ? action : "?", ctx->cooldown_min);
+
+    /* Sprint 14 — hardware output channels (NOT gated by cool-down; mirrors
+     * the same policy as VAPIX virtual port activation — reflects real state) */
+    if (strcmp(action, "activated") == 0)
+        alertoutput_on_activate(event, headline, &ctx->alertout_cfg);
+    else if (strcmp(action, "cleared") == 0)
+        alertoutput_on_clear(event, &ctx->alertout_cfg);
 }
 
 /* ── Status JSON (read by CGI) ──────────────────────────────────────────── */
@@ -303,6 +313,13 @@ static const char *CONFIG_PARAMS[] = {
     "LightningEnabled", "LightningPort", "LightningMinRisk", "LightningPollMult",
     /* Sprint 13 — JSON logging */
     "JsonLogging",
+    /* Sprint 14 — hardware alert output */
+    "DisplayAlertEnabled", "DisplayAlertDuration",
+    "DisplayAlertTextColor", "DisplayAlertBgWarning", "DisplayAlertBgWatch",
+    "StrobeAlertEnabled", "StrobeAlertDuration",
+    "D4200Enabled", "D4200Host", "D4200User", "D4200Pass",
+    "D4200WarningProfile", "D4200WatchProfile",
+    "AudioAlertEnabled", "AudioClipWarning", "AudioClipWatch",
     NULL
 };
 
@@ -490,6 +507,24 @@ static gboolean do_poll(gpointer user_data) {
     int   ln_min_risk  = params_get_int("LightningMinRisk",   1);
     int   ln_poll_mult = params_get_int("LightningPollMult",  6);
 
+    /* Sprint 14 — hardware alert output */
+    char *ao_disp_en    = params_get("DisplayAlertEnabled");
+    char *ao_disp_dur   = params_get("DisplayAlertDuration");
+    char *ao_disp_tc    = params_get("DisplayAlertTextColor");
+    char *ao_disp_bgw   = params_get("DisplayAlertBgWarning");
+    char *ao_disp_bgwt  = params_get("DisplayAlertBgWatch");
+    char *ao_strobe_en  = params_get("StrobeAlertEnabled");
+    char *ao_strobe_dur = params_get("StrobeAlertDuration");
+    char *ao_d4_en      = params_get("D4200Enabled");
+    char *ao_d4_host    = params_get("D4200Host");
+    char *ao_d4_user    = params_get("D4200User");
+    char *ao_d4_pass    = params_get("D4200Pass");
+    char *ao_d4_wpro    = params_get("D4200WarningProfile");
+    char *ao_d4_wtpro   = params_get("D4200WatchProfile");
+    char *ao_aud_en     = params_get("AudioAlertEnabled");
+    int   ao_aud_clipw  = params_get_int("AudioClipWarning", -1);
+    int   ao_aud_clipwt = params_get_int("AudioClipWatch",   -1);
+
     /* Sprint 13 — JSON structured logging (re-apply every tick so
      * toggling the setting in the UI takes effect without a restart). */
     char *json_log = params_get("JsonLogging");
@@ -577,6 +612,30 @@ static gboolean do_poll(gpointer user_data) {
         multicam_parse(mc_list, &ctx.multicam_cfg);
         ctx.multicam_cfg.enabled  = mc_enabled && strcasecmp(mc_enabled, "yes") == 0;
         ctx.multicam_resolution   = (mc_res && *mc_res) ? mc_res : "1280x720";
+
+        /* Sprint 14 — hardware alert output config */
+        memset(&ctx.alertout_cfg, 0, sizeof(ctx.alertout_cfg));
+        ctx.alertout_cfg.display_enabled   = ao_disp_en   && strcasecmp(ao_disp_en,   "yes") == 0;
+        ctx.alertout_cfg.display_duration_s= ao_disp_dur  && *ao_disp_dur ? atoi(ao_disp_dur) : 30;
+        snprintf(ctx.alertout_cfg.display_text_color, 16, "%s",
+                 (ao_disp_tc  && *ao_disp_tc)  ? ao_disp_tc  : "#FFFFFF");
+        snprintf(ctx.alertout_cfg.display_bg_warning,  16, "%s",
+                 (ao_disp_bgw && *ao_disp_bgw) ? ao_disp_bgw : "#CC0000");
+        snprintf(ctx.alertout_cfg.display_bg_watch,    16, "%s",
+                 (ao_disp_bgwt&& *ao_disp_bgwt)? ao_disp_bgwt: "#FF8800");
+        ctx.alertout_cfg.strobe_enabled    = ao_strobe_en  && strcasecmp(ao_strobe_en,  "yes") == 0;
+        ctx.alertout_cfg.strobe_duration_s = ao_strobe_dur && *ao_strobe_dur ? atoi(ao_strobe_dur) : 30;
+        ctx.alertout_cfg.d4200_enabled     = ao_d4_en      && strcasecmp(ao_d4_en,     "yes") == 0;
+        snprintf(ctx.alertout_cfg.d4200_host,            128, "%s", ao_d4_host  ? ao_d4_host  : "");
+        snprintf(ctx.alertout_cfg.d4200_user,             64, "%s", ao_d4_user  ? ao_d4_user  : "root");
+        snprintf(ctx.alertout_cfg.d4200_pass,             64, "%s", ao_d4_pass  ? ao_d4_pass  : "");
+        snprintf(ctx.alertout_cfg.d4200_warning_profile,  64, "%s", ao_d4_wpro  ? ao_d4_wpro  : "emergency");
+        snprintf(ctx.alertout_cfg.d4200_watch_profile,    64, "%s", ao_d4_wtpro ? ao_d4_wtpro : "caution");
+        ctx.alertout_cfg.audio_enabled     = ao_aud_en     && strcasecmp(ao_aud_en,    "yes") == 0;
+        ctx.alertout_cfg.audio_clip_warning = ao_aud_clipw;
+        ctx.alertout_cfg.audio_clip_watch   = ao_aud_clipwt;
+        ctx.alertout_cfg.vapix_user         = vuser;
+        ctx.alertout_cfg.vapix_pass         = vpass;
 
         /* Fire/clear virtual input ports — NWS alert-type rules */
         alerts_process(&snap, &map, vuser, vpass, on_alert_transition, &ctx);
@@ -685,6 +744,12 @@ static gboolean do_poll(gpointer user_data) {
     free(ax_ev_enabled);
     free(ln_enabled);
     free(json_log);
+    free(ao_disp_en); free(ao_disp_dur); free(ao_disp_tc);
+    free(ao_disp_bgw); free(ao_disp_bgwt);
+    free(ao_strobe_en); free(ao_strobe_dur);
+    free(ao_d4_en); free(ao_d4_host); free(ao_d4_user); free(ao_d4_pass);
+    free(ao_d4_wpro); free(ao_d4_wtpro);
+    free(ao_aud_en);
 
     return G_SOURCE_CONTINUE;
 }

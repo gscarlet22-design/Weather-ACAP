@@ -48,6 +48,7 @@
     <button class="tab-btn"        data-tab="alerts"       type="button">Alerts &amp; Triggers</button>
     <button class="tab-btn"        data-tab="overlay"      type="button">Overlay</button>
     <button class="tab-btn"        data-tab="snapshots"    type="button">Snapshots</button>
+    <button class="tab-btn"        data-tab="hardware"     type="button">Hardware Output</button>
     <button class="tab-btn"        data-tab="diagnostics"  type="button">Diagnostics</button>
     <button class="tab-btn"        data-tab="advanced"     type="button">Advanced</button>
   </nav>
@@ -515,6 +516,156 @@
           </div>
         </div>
       </div>
+    </section>
+
+    <!-- Hardware Output (Sprint 14) -->
+    <section id="tab-hardware" class="tab-pane">
+
+      <!-- Card 1: Speaker Display (C1710 / C1720) -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Speaker Display <span class="chip">C1710 / C1720</span></h2>
+          <label class="switch">
+            <input type="checkbox" id="f-display-alert-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>Scrolls the alert headline across the C1710 / C1720 front-panel LED display when an alert activates. Fails silently on cameras without a display.</small>
+          <div class="form-grid-2" style="margin-top:0.8rem;">
+            <div class="form-row">
+              <label for="f-display-alert-duration">Display duration (seconds)</label>
+              <input id="f-display-alert-duration" type="number" min="5" max="300" placeholder="30">
+            </div>
+            <div class="form-row">
+              <label for="f-display-alert-text-color">Text color</label>
+              <div class="color-input-row">
+                <input id="f-display-alert-text-color" type="color" value="#FFFFFF">
+                <input id="f-display-alert-text-color-hex" type="text" maxlength="7" placeholder="#FFFFFF" class="color-hex">
+              </div>
+            </div>
+            <div class="form-row">
+              <label for="f-display-alert-bg-warning">Warning background <span class="tier-badge tier-warning">Warning</span></label>
+              <div class="color-input-row">
+                <input id="f-display-alert-bg-warning" type="color" value="#CC0000">
+                <input id="f-display-alert-bg-warning-hex" type="text" maxlength="7" placeholder="#CC0000" class="color-hex">
+              </div>
+            </div>
+            <div class="form-row">
+              <label for="f-display-alert-bg-watch">Watch background <span class="tier-badge tier-watch">Watch</span></label>
+              <div class="color-input-row">
+                <input id="f-display-alert-bg-watch" type="color" value="#FF8800">
+                <input id="f-display-alert-bg-watch-hex" type="text" maxlength="7" placeholder="#FF8800" class="color-hex">
+              </div>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" data-save="hardware" type="button">Save display settings</button>
+            <button class="btn btn-ghost" id="hw-test-display" type="button">&#128308; Test display</button>
+            <div id="hw-result-display" class="diag-result">&mdash;</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Strobe / Siren-and-Light (C1710 / C1720) -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Strobe Light <span class="chip">C1710 / C1720</span></h2>
+          <label class="switch">
+            <input type="checkbox" id="f-strobe-alert-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>Activates the built-in siren and light on C1710 / C1720 devices via <code>siren_and_light.cgi</code>.
+            <strong>Warning</strong>-tier alerts use a fast red pulse; <strong>Watch</strong>-tier alerts use a slow amber pulse.</small>
+          <div class="form-row" style="margin-top:0.8rem;max-width:260px;">
+            <label for="f-strobe-alert-duration">Strobe duration (seconds)</label>
+            <input id="f-strobe-alert-duration" type="number" min="5" max="300" placeholder="30">
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" data-save="hardware" type="button">Save strobe settings</button>
+            <button class="btn btn-ghost" id="hw-test-strobe-warn" type="button">&#128308; Test Warning strobe (red)</button>
+            <button class="btn btn-ghost" id="hw-test-strobe-watch" type="button">&#128992; Test Watch strobe (amber)</button>
+            <div id="hw-result-strobe" class="diag-result">&mdash;</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3: D4200 Network Horn -->
+      <div class="card">
+        <div class="card-header">
+          <h2>D4200 Network Horn <span class="chip">Remote device</span></h2>
+          <label class="switch">
+            <input type="checkbox" id="f-d4200-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>Activates a named strobe profile on a remote Axis D4200 Network Horn via its <code>siren_and_light.cgi startProfile</code> API.
+            Profiles must be pre-configured on the D4200 device web UI.</small>
+          <div class="form-grid-2" style="margin-top:0.8rem;">
+            <div class="form-row">
+              <label for="f-d4200-host">Host / IP <small class="dim">(no http://)</small></label>
+              <input id="f-d4200-host" type="text" placeholder="192.168.1.50">
+            </div>
+            <div class="form-row">
+              <label for="f-d4200-user">Username</label>
+              <input id="f-d4200-user" type="text" autocomplete="off" placeholder="root">
+            </div>
+            <div class="form-row">
+              <label for="f-d4200-pass">Password</label>
+              <input id="f-d4200-pass" type="password" autocomplete="new-password" placeholder="(unchanged)">
+            </div>
+            <div class="form-row"><!-- spacer --></div>
+            <div class="form-row">
+              <label for="f-d4200-warning-profile">Warning profile name <span class="tier-badge tier-warning">Warning</span></label>
+              <input id="f-d4200-warning-profile" type="text" placeholder="emergency">
+            </div>
+            <div class="form-row">
+              <label for="f-d4200-watch-profile">Watch profile name <span class="tier-badge tier-watch">Watch</span></label>
+              <input id="f-d4200-watch-profile" type="text" placeholder="caution">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" data-save="hardware" type="button">Save D4200 settings</button>
+            <button class="btn btn-ghost" id="hw-test-d4200" type="button">&#9889; Test D4200 (Warning profile)</button>
+            <div id="hw-result-d4200" class="diag-result">&mdash;</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4: Audio Clips -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Audio Clips <span class="chip">C1710 / C1720</span></h2>
+          <label class="switch">
+            <input type="checkbox" id="f-audio-alert-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="card-body">
+          <small>Plays a pre-loaded audio clip from the device's media clip library via <code>mediaclip.cgi</code> when an alert activates.
+            Upload clips via the device web UI under <strong>Audio &rarr; Media clips</strong>, then note the clip ID (integer) assigned by the device.</small>
+          <div class="form-grid-2" style="margin-top:0.8rem;">
+            <div class="form-row">
+              <label for="f-audio-clip-warning">Warning clip ID <span class="tier-badge tier-warning">Warning</span> <small class="dim">(-1 = disabled)</small></label>
+              <input id="f-audio-clip-warning" type="number" min="-1" placeholder="-1">
+            </div>
+            <div class="form-row">
+              <label for="f-audio-clip-watch">Watch clip ID <span class="tier-badge tier-watch">Watch</span> <small class="dim">(-1 = disabled)</small></label>
+              <input id="f-audio-clip-watch" type="number" min="-1" placeholder="-1">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" data-save="hardware" type="button">Save audio settings</button>
+            <button class="btn btn-ghost" id="hw-test-audio-warn" type="button">&#9654; Test Warning clip</button>
+            <button class="btn btn-ghost" id="hw-test-audio-watch" type="button">&#9654; Test Watch clip</button>
+            <div id="hw-result-audio" class="diag-result">&mdash;</div>
+          </div>
+        </div>
+      </div>
+
     </section>
 
     <!-- Diagnostics -->
