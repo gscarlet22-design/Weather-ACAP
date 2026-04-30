@@ -103,6 +103,7 @@ static const FieldMap FIELDS[] = {
     { "WebhookEnabled",       "webhook_enabled",       "no" },
     { "WebhookUrl",           "webhook_url",           "" },
     { "WebhookOnAlertsOnly",  "webhook_on_alerts_only","yes" },
+    { "WebhookTemplate",      "webhook_template",      "" },
     { "VapixUser",            "vapix_user",            "root" },
     { "VapixPass",            "vapix_pass",            "" },
     { "MockMode",             "mock_mode",             "no" },
@@ -697,7 +698,7 @@ static void endpoint_test_webhook(void) {
     snprintf(snap.conditions.description, sizeof(snap.conditions.description),
              "Webhook Test");
     snprintf(snap.conditions.provider, sizeof(snap.conditions.provider), "test");
-    long code = webhook_post(url, &snap, "webhook_test", "");
+    long code = webhook_post(url, &snap, "webhook_test", "", NULL, NULL);
     free(url);
 
     json_header();

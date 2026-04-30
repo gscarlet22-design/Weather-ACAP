@@ -114,6 +114,7 @@
       $("f-webhook-enabled").checked   = (cfg.webhook_enabled || "").toLowerCase() === "yes";
       $("f-webhook-url").value         = cfg.webhook_url || "";
       $("f-webhook-alerts-only").checked = (cfg.webhook_on_alerts_only || "").toLowerCase() === "yes";
+      $("f-webhook-template").value    = cfg.webhook_template || "";
       $("f-mock-mode").checked         = (cfg.mock_mode || "").toLowerCase() === "yes";
       $("f-axis-events-enabled").checked = (cfg.axis_events_enabled || "yes").toLowerCase() === "yes";
       /* Sprint 10 — MockMode banner */
@@ -202,6 +203,7 @@
       pairs.push(encField("webhook_enabled",         $("f-webhook-enabled").checked ? "yes" : "no"));
       pairs.push(encField("webhook_url",             $("f-webhook-url").value.trim()));
       pairs.push(encField("webhook_on_alerts_only",  $("f-webhook-alerts-only").checked ? "yes" : "no"));
+      pairs.push(encField("webhook_template",        $("f-webhook-template").value));
       /* MQTT */
       pairs.push(encField("mqtt_enabled",       $("f-mqtt-enabled").checked ? "yes" : "no"));
       pairs.push(encField("mqtt_broker_url",    $("f-mqtt-broker").value.trim()));
@@ -1108,6 +1110,34 @@
     }).catch(function () { /* silent — daemon may not have polled yet */ });
   }
 
+  /* ── Sprint 11 — Webhook preset templates ──────────────────────────────── */
+  var WEBHOOK_PRESETS = {
+    slack:
+      '{"text":"*{event_type}* — {alert_type}\\n>{description} | {temp_f}°F | Wind {wind_mph}mph | Humidity {humidity_pct}%\\n_{timestamp}_"}',
+    discord:
+      '{"content":null,"embeds":[{"title":"{event_type}","description":"{alert_type}\\n{description} | {temp_f}°F | Wind {wind_mph}mph","color":15158332,"footer":{"text":"{timestamp}"}}]}',
+    teams:
+      '{"@type":"MessageCard","@context":"http://schema.org/extensions","summary":"{alert_type}","themeColor":"FF0000","title":"{event_type}","text":"{alert_type} — {description} | {temp_f}°F | Wind {wind_mph}mph | {timestamp}"}',
+    ha:
+      '{"event_type":"{event_type}","alert_type":"{alert_type}","temp_f":{temp_f},"wind_mph":{wind_mph},"humidity_pct":{humidity_pct},"description":"{description}","timestamp":"{timestamp}"}'
+  };
+
+  function initWebhookPresets() {
+    function wire(id, preset) {
+      var btn = $(id);
+      if (!btn) return;
+      btn.addEventListener("click", function () {
+        $("f-webhook-template").value = preset || "";
+        $("f-webhook-template").focus();
+      });
+    }
+    wire("wh-preset-slack",   WEBHOOK_PRESETS.slack);
+    wire("wh-preset-discord", WEBHOOK_PRESETS.discord);
+    wire("wh-preset-teams",   WEBHOOK_PRESETS.teams);
+    wire("wh-preset-ha",      WEBHOOK_PRESETS.ha);
+    wire("wh-preset-clear",   "");
+  }
+
   /* ── Boot ────────────────────────────────────────────────────────────────── */
   function init() {
     initTabs();
@@ -1115,6 +1145,7 @@
     initAlertButtons();
     initThresholdButtons();
     initMultiCam();
+    initWebhookPresets();
     initOverlay();
     initSnapshots();
     initNotifications();

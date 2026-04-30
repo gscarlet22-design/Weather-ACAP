@@ -100,6 +100,7 @@ typedef struct {
     const WeatherSnapshot *snap;
     int   webhook_enabled;
     const char *webhook_url;
+    const char *webhook_template;   /* Sprint 11 — custom payload template */
     int   webhook_on_alerts_only;
     /* VAPIX credentials — needed by snapshot_capture */
     const char *vapix_user;
@@ -144,10 +145,11 @@ static void on_alert_transition(const char *event, const char *headline,
                          &ctx->snap_cfg,
                          NULL, 0);
 
-    /* Webhook — gated by cool-down */
+    /* Webhook — gated by cool-down (Sprint 11: pass headline + template) */
     if (send_notifs &&
         ctx->webhook_enabled && ctx->webhook_url && *ctx->webhook_url)
-        webhook_post(ctx->webhook_url, ctx->snap, event_type, event);
+        webhook_post(ctx->webhook_url, ctx->snap, event_type, event,
+                     headline, ctx->webhook_template);
 
     /* MQTT publish (Sprint 3) — gated by cool-down */
     if (send_notifs && ctx->mqtt_cfg.enabled)
@@ -269,7 +271,7 @@ static const char *CONFIG_PARAMS[] = {
     "WeatherProvider", "NWSUserAgent", "PollInterval", "AlertMap",
     "OverlayEnabled", "OverlayPosition", "OverlayTemplate",
     "OverlayAlertTemplate", "OverlayMaxAlerts",
-    "WebhookEnabled", "WebhookUrl", "WebhookOnAlertsOnly",
+    "WebhookEnabled", "WebhookUrl", "WebhookOnAlertsOnly", "WebhookTemplate",
     "VapixUser", "VapixPass", "MockMode",
     /* Sprint 2 — snapshot on alert */
     "SnapshotEnabled", "SnapshotResolution", "SnapshotSaveDir",
@@ -424,9 +426,10 @@ static gboolean do_poll(gpointer user_data) {
     char *ov_atmpl   = params_get("OverlayAlertTemplate");
     int   ov_max     = params_get_int("OverlayMaxAlerts", 3);
 
-    char *wh_enabled = params_get("WebhookEnabled");
-    char *wh_url     = params_get("WebhookUrl");
-    char *wh_alerts  = params_get("WebhookOnAlertsOnly");
+    char *wh_enabled  = params_get("WebhookEnabled");
+    char *wh_url      = params_get("WebhookUrl");
+    char *wh_alerts   = params_get("WebhookOnAlertsOnly");
+    char *wh_template = params_get("WebhookTemplate");   /* Sprint 11 */
 
     char *sn_enabled  = params_get("SnapshotEnabled");
     char *sn_res      = params_get("SnapshotResolution");
@@ -511,6 +514,7 @@ static gboolean do_poll(gpointer user_data) {
             .snap                    = &snap,
             .webhook_enabled         = wh_enabled && strcasecmp(wh_enabled, "yes") == 0,
             .webhook_url             = wh_url,
+            .webhook_template        = wh_template,   /* Sprint 11 */
             .webhook_on_alerts_only  = wh_alerts && strcasecmp(wh_alerts, "yes") == 0,
             .vapix_user              = vuser,
             .vapix_pass              = vpass,
@@ -604,7 +608,7 @@ static gboolean do_poll(gpointer user_data) {
     free(zip); free(lat_ov); free(lon_ov); free(provider);
     free(ua); free(alertmap); free(vuser); free(vpass); free(mock);
     free(ov_enabled); free(ov_pos); free(ov_tmpl); free(ov_atmpl);
-    free(wh_enabled); free(wh_url); free(wh_alerts);
+    free(wh_enabled); free(wh_url); free(wh_alerts); free(wh_template);
     free(sn_enabled); free(sn_res); free(sn_dir);
     free(sn_activate); free(sn_clear);
     free(mq_enabled); free(mq_broker); free(mq_topic);
