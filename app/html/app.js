@@ -116,6 +116,12 @@
       $("f-webhook-alerts-only").checked = (cfg.webhook_on_alerts_only || "").toLowerCase() === "yes";
       $("f-mock-mode").checked         = (cfg.mock_mode || "").toLowerCase() === "yes";
       $("f-axis-events-enabled").checked = (cfg.axis_events_enabled || "yes").toLowerCase() === "yes";
+      /* Sprint 10 — MockMode banner */
+      var banner = $("mock-banner");
+      if (banner) {
+        if ((cfg.mock_mode || "").toLowerCase() === "yes") banner.classList.remove("hidden");
+        else banner.classList.add("hidden");
+      }
       /* MQTT */
       $("f-mqtt-enabled").checked       = (cfg.mqtt_enabled || "").toLowerCase() === "yes";
       $("f-mqtt-broker").value          = cfg.mqtt_broker_url || "";
@@ -535,6 +541,33 @@
     });
   }
 
+  /* ── Sprint 10 helpers ──────────────────────────────────────────────────── */
+
+  /* Classify an alert type string into a badge CSS class + extra class */
+  function alertBadgeClass(eventType) {
+    var t = (eventType || "").toLowerCase();
+    if (t.indexOf("warning") >= 0) {
+      var extra = t.indexOf("tornado") >= 0 ? " badge-tornado" : "";
+      return "badge badge-warning" + extra;
+    }
+    if (t.indexOf("watch") >= 0)    return "badge badge-watch";
+    if (t.indexOf("advisory") >= 0) return "badge badge-advisory";
+    if (t.indexOf("threshold:") >= 0 || t.indexOf("tempf") >= 0 ||
+        t.indexOf("windmph") >= 0 || t.indexOf("humidity") >= 0 ||
+        t.indexOf("winddir") >= 0) return "badge badge-threshold";
+    /* Default for unknown types: use warning style */
+    return "badge badge-warning";
+  }
+
+  /* Return badge label text */
+  function alertBadgeLabel(eventType) {
+    var t = (eventType || "").toLowerCase();
+    if (t.indexOf("warning")  >= 0) return "Warning";
+    if (t.indexOf("watch")    >= 0) return "Watch";
+    if (t.indexOf("advisory") >= 0) return "Advisory";
+    return "Alert";
+  }
+
   /* ── Live status polling ────────────────────────────────────────────────── */
   var pollTimer = null;
 
@@ -566,6 +599,19 @@
       $("dash-desc").textContent     = c.valid ? c.description : "\u2014";
       $("dash-wind").textContent     = c.valid ? (Math.round(c.wind_speed_mph) + " mph " + (c.wind_dir_str || "")) : "\u2014";
       $("dash-hum").textContent      = c.valid ? (c.humidity_pct + "%") : "\u2014";
+      /* Sprint 10 — compass arrow: rotate so ↑ points INTO the wind (from direction) */
+      var arrowEl = $("dash-wind-arrow");
+      if (arrowEl) {
+        if (c.valid && c.wind_speed_mph > 0 && c.wind_dir_deg !== undefined) {
+          /* wind_dir_deg is "from" direction (meteorological). Arrow ↑ = North.
+           * Rotate by wind_dir_deg so arrow points in the "from" direction.   */
+          arrowEl.style.transform = "rotate(" + c.wind_dir_deg + "deg)";
+          arrowEl.title = "Wind from " + (c.wind_dir_str || c.wind_dir_deg + "\u00B0");
+          arrowEl.classList.remove("hidden");
+        } else {
+          arrowEl.classList.add("hidden");
+        }
+      }
       $("dash-provider").textContent = c.provider || "\u2014";
       $("dash-coords").textContent   = s.lat ? (s.lat.toFixed(4) + ", " + s.lon.toFixed(4)) : "\u2014";
       $("dash-lastpoll").textContent = s.last_poll || "\u2014";
@@ -586,8 +632,12 @@
       } else {
         al.forEach(function (a) {
           var li = document.createElement("li");
-          li.innerHTML = '<span class="event">' + escHtml(a.event) + '</span>' +
-                         '<span class="headline">' + escHtml(a.headline) + '</span>';
+          var badgeCls   = alertBadgeClass(a.event);
+          var badgeLabel = alertBadgeLabel(a.event);
+          li.innerHTML =
+            '<span class="' + badgeCls + '">' + escHtml(badgeLabel) + '</span>' +
+            '<span class="event">' + escHtml(a.event) + '</span>' +
+            '<span class="headline">' + escHtml(a.headline) + '</span>';
           ul.appendChild(li);
         });
       }
