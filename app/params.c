@@ -129,6 +129,12 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     /* Sprint 9 — Native AXIS events */
     { "AxisEventsEnabled", "yes" },   /* publish alert/conditions via axevent */
 
+    /* Sprint 12 — Lightning / SPC convective outlook */
+    { "LightningEnabled",  "no"  },
+    { "LightningPort",     "35"  },   /* virtual input port for lightning risk */
+    { "LightningMinRisk",  "1"   },   /* 1=any TSTM; 2=MRGL+; 3=SLGT+; etc. */
+    { "LightningPollMult", "6"   },   /* check SPC every N poll cycles */
+
     { NULL, NULL }
 };
 

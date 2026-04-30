@@ -156,6 +156,11 @@
       /* Cool-down settings (Sprint 7) */
       $("f-alert-cooldown").value     = cfg.alert_cooldown_min !== undefined ? cfg.alert_cooldown_min : "10";
       $("f-threshold-cooldown").value = cfg.threshold_cooldown_min !== undefined ? cfg.threshold_cooldown_min : "10";
+      /* Lightning settings (Sprint 12) */
+      $("f-lightning-enabled").checked  = (cfg.lightning_enabled || "").toLowerCase() === "yes";
+      $("f-lightning-port").value       = cfg.lightning_port || "35";
+      $("f-lightning-min-risk").value   = cfg.lightning_min_risk || "1";
+      $("f-lightning-poll-mult").value  = cfg.lightning_poll_mult || "6";
       /* Multi-camera settings (Sprint 8) */
       $("f-multicam-enabled").checked  = (cfg.multicam_enabled || "").toLowerCase() === "yes";
       $("f-multicam-resolution").value = cfg.multicam_resolution || "1280x720";
@@ -178,6 +183,11 @@
       pairs.push(encField("threshold_map", serializeThresholdMap()));
       pairs.push(encField("alert_cooldown_min",     $("f-alert-cooldown").value || "10"));
       pairs.push(encField("threshold_cooldown_min", $("f-threshold-cooldown").value || "10"));
+      /* Sprint 12 — lightning */
+      pairs.push(encField("lightning_enabled",   $("f-lightning-enabled").checked ? "yes" : "no"));
+      pairs.push(encField("lightning_port",      $("f-lightning-port").value || "35"));
+      pairs.push(encField("lightning_min_risk",  $("f-lightning-min-risk").value || "1"));
+      pairs.push(encField("lightning_poll_mult", $("f-lightning-poll-mult").value || "6"));
     } else if (section === "overlay") {
       pairs.push(encField("overlay_enabled",        $("f-overlay-enabled").checked ? "yes" : "no"));
       pairs.push(encField("overlay_position",       $("f-overlay-position").value));
@@ -617,6 +627,17 @@
       $("dash-provider").textContent = c.provider || "\u2014";
       $("dash-coords").textContent   = s.lat ? (s.lat.toFixed(4) + ", " + s.lon.toFixed(4)) : "\u2014";
       $("dash-lastpoll").textContent = s.last_poll || "\u2014";
+      /* Sprint 12 — SPC lightning risk */
+      var lnEl = $("dash-lightning");
+      if (lnEl) {
+        if (s.lightning_risk && s.lightning_risk_level > 0) {
+          lnEl.textContent = s.lightning_risk + " (" + s.lightning_risk_level + "/6)";
+          lnEl.className = "lightning-risk-active";
+        } else {
+          lnEl.textContent = "None";
+          lnEl.className = "";
+        }
+      }
 
       /* Dashboard — alerts */
       var al = s.alerts || [];

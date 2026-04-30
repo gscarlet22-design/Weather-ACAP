@@ -74,6 +74,10 @@ static const char *lookup_var(const char *key, const WeatherSnapshot *snap,
     if (strcmp(key, "alert_type") == 0) {
         return alert_event ? alert_event : "";
     }
+    /* Sprint 12 — SPC convective risk level label */
+    if (strcmp(key, "lightning") == 0) {
+        return snap->lightning_risk[0] ? snap->lightning_risk : "";
+    }
     return "";
 }
 

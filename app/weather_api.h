@@ -25,6 +25,9 @@ typedef struct {
     NWSAlertSet       alerts;
     double            lat;
     double            lon;
+    /* Sprint 12 — SPC lightning / convective risk (populated separately) */
+    char lightning_risk[8];   /* "TSTM", "MRGL", "SLGT", "ENH", "MDT", "HIGH", or "" */
+    int  lightning_risk_level; /* 0 = none, 1–6 = increasing severity */
 } WeatherSnapshot;
 
 /*

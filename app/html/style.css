@@ -366,6 +366,12 @@ html, body {
 }
 .wind-arrow.hidden { display: none; }
 
+/* ── Sprint 12 — Lightning risk indicator ───────────────────────────────── */
+.lightning-risk-active {
+  color: var(--bolt);
+  font-weight: 600;
+}
+
 /* ── Sprint 11 — Webhook preset bar ─────────────────────────────────────── */
 .webhook-preset-bar {
   display: flex;

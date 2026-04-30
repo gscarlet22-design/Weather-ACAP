@@ -28,6 +28,7 @@ set(SHARED_SRCS
     condhistory.c
     multicam.c
     axisevents.c
+    lightning.c
 )
 
 # ── Main daemon ──────────────────────────────────────────────────────────
