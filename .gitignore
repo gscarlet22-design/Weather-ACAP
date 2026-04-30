@@ -11,6 +11,8 @@ build/
 
 # ── Runtime data (created on-camera, never in repo) ───────────────────────────
 localdata/
+app/localdata/
+*.json.tmp
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 .env

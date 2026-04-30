@@ -20,6 +20,7 @@
 #include "multicam.h"
 #include "axisevents.h"
 #include "lightning.h"
+#include "jsonlog.h"
 
 #include <curl/curl.h>
 #include <glib.h>
@@ -180,7 +181,7 @@ static void on_alert_transition(const char *event, const char *headline,
                          ctx->snap_cfg.on_clear);
 
     if (!send_notifs)
-        syslog(LOG_INFO,
+        jlog(LOG_INFO,
                "cooldown: suppressed notifications for %s/%s (%d min hold-off)",
                event ? event : "?", action ? action : "?", ctx->cooldown_min);
 }
@@ -300,6 +301,8 @@ static const char *CONFIG_PARAMS[] = {
     "AxisEventsEnabled",
     /* Sprint 12 — lightning alerts */
     "LightningEnabled", "LightningPort", "LightningMinRisk", "LightningPollMult",
+    /* Sprint 13 — JSON logging */
+    "JsonLogging",
     NULL
 };
 
@@ -368,7 +371,7 @@ static void apply_save_file(void) {
             if (ok) {
                 succeeded++;
             } else {
-                syslog(LOG_WARNING,
+                jlog(LOG_WARNING,
                        "weather_acap: params_set(%s=\"%s\") FAILED: %s",
                        CONFIG_PARAMS[i],
                        v->valuestring ? v->valuestring : "",
@@ -381,7 +384,7 @@ static void apply_save_file(void) {
 
     /* Re-export so CGI sees updated values */
     write_config_file();
-    syslog(LOG_INFO,
+    jlog(LOG_INFO,
            "weather_acap: applied save file from CGI (%d/%d keys stored)",
            succeeded, attempted);
 }
@@ -417,7 +420,7 @@ static gboolean do_poll(gpointer user_data) {
     free(enabled_s);
 
     if (!enabled) {
-        syslog(LOG_INFO, "weather_acap: SystemEnabled=no, skipping poll");
+        jlog(LOG_INFO, "weather_acap: SystemEnabled=no, skipping poll");
         return G_SOURCE_CONTINUE;
     }
 
@@ -487,6 +490,11 @@ static gboolean do_poll(gpointer user_data) {
     int   ln_min_risk  = params_get_int("LightningMinRisk",   1);
     int   ln_poll_mult = params_get_int("LightningPollMult",  6);
 
+    /* Sprint 13 — JSON structured logging (re-apply every tick so
+     * toggling the setting in the UI takes effect without a restart). */
+    char *json_log = params_get("JsonLogging");
+    jsonlog_init(json_log && strcasecmp(json_log, "yes") == 0, "weather_acap");
+
     int is_mock = mock && strcasecmp(mock, "yes") == 0;
 
     WeatherSnapshot snap;
@@ -495,7 +503,7 @@ static gboolean do_poll(gpointer user_data) {
     int ok;
 
     if (is_mock) {
-        syslog(LOG_INFO, "weather_acap: [MOCK] poll tick");
+        jlog(LOG_INFO, "weather_acap: [MOCK] poll tick");
         snap.conditions.temp_f         = 72.0;
         snap.conditions.wind_speed_mph = 8.0;
         snap.conditions.wind_dir_deg   = 225;
@@ -511,7 +519,7 @@ static gboolean do_poll(gpointer user_data) {
         snap.alerts.count = 1;
         ok = 1;
     } else {
-        syslog(LOG_INFO, "weather_acap: poll tick (provider=%s)", provider ? provider : "auto");
+        jlog(LOG_INFO, "weather_acap: poll tick (provider=%s)", provider ? provider : "auto");
         ok = weather_api_fetch(provider ? provider : "auto",
                                zip, lat_ov, lon_ov,
                                ua ? ua : "WeatherACAP/2.0",
@@ -595,7 +603,7 @@ static gboolean do_poll(gpointer user_data) {
 
         video_present = (overlay_text[0] != '\0');
 
-        syslog(LOG_INFO,
+        jlog(LOG_INFO,
                "weather_acap: %.0fF %s | wind %.0fmph | alerts:%d",
                snap.conditions.temp_f,
                snap.conditions.description,
@@ -632,7 +640,7 @@ static gboolean do_poll(gpointer user_data) {
             snap.lightning_risk_level = at_risk ? risk.risk_level : 0;
 
             if (at_risk && !g_lightning_active) {
-                syslog(LOG_WARNING,
+                jlog(LOG_WARNING,
                        "weather_acap: SPC lightning risk %s (level %d) — activating port %d",
                        risk.label, risk.risk_level, ln_port);
                 vapix_port_set(ln_port, 1, vuser, vpass);
@@ -642,7 +650,7 @@ static gboolean do_poll(gpointer user_data) {
                 /* Update status with lightning info */
                 write_status(&snap, overlay_text, video_present, last_error);
             } else if (!at_risk && g_lightning_active) {
-                syslog(LOG_INFO,
+                jlog(LOG_INFO,
                        "weather_acap: SPC lightning risk cleared — deactivating port %d",
                        ln_port);
                 vapix_port_set(ln_port, 0, vuser, vpass);
@@ -676,6 +684,7 @@ static gboolean do_poll(gpointer user_data) {
     free(mc_enabled); free(mc_list); free(mc_res);
     free(ax_ev_enabled);
     free(ln_enabled);
+    free(json_log);
 
     return G_SOURCE_CONTINUE;
 }
@@ -698,10 +707,10 @@ static pid_t g_cgi_pid = 0;
 
 static void spawn_fastcgi_child(void) {
     const char *sock = getenv("FCGI_SOCKET_NAME");
-    syslog(LOG_INFO, "weather_acap: FCGI_SOCKET_NAME=%s",
+    jlog(LOG_INFO, "weather_acap: FCGI_SOCKET_NAME=%s",
            sock ? sock : "(unset)");
     if (!sock || !*sock) {
-        syslog(LOG_WARNING,
+        jlog(LOG_WARNING,
                "weather_acap: no FCGI_SOCKET_NAME in env; web UI CGI will "
                "not be spawned — expect HTTP 503 on /local/weather_acap/");
         return;
@@ -709,7 +718,7 @@ static void spawn_fastcgi_child(void) {
 
     pid_t pid = fork();
     if (pid < 0) {
-        syslog(LOG_ERR, "weather_acap: fork for CGI failed: %m");
+        jlog(LOG_ERR, "weather_acap: fork for CGI failed: %m");
         return;
     }
     if (pid == 0) {
@@ -718,11 +727,11 @@ static void spawn_fastcgi_child(void) {
         const char *cgi_path = "/usr/local/packages/weather_acap/weather_acap.cgi";
         execl(cgi_path, "weather_acap.cgi", (char *)NULL);
         /* Only reached on failure */
-        syslog(LOG_ERR, "weather_acap: exec %s failed: %m", cgi_path);
+        jlog(LOG_ERR, "weather_acap: exec %s failed: %m", cgi_path);
         _exit(1);
     }
     g_cgi_pid = pid;
-    syslog(LOG_INFO, "weather_acap: spawned FastCGI child pid=%d on socket=%s",
+    jlog(LOG_INFO, "weather_acap: spawned FastCGI child pid=%d on socket=%s",
            (int)pid, sock);
 }
 
@@ -732,7 +741,7 @@ static void on_sigchld(int sig) {
     int status = 0;
     pid_t pid;
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        syslog(LOG_WARNING,
+        jlog(LOG_WARNING,
                "weather_acap: CGI child pid=%d exited status=%d",
                (int)pid, status);
         if (pid == g_cgi_pid) g_cgi_pid = 0;
@@ -741,7 +750,12 @@ static void on_sigchld(int sig) {
 
 int main(void) {
     openlog("weather_acap", LOG_PID | LOG_CONS, LOG_USER);
-    syslog(LOG_INFO, "weather_acap: starting up (native ACAP v4)");
+    /* Sprint 13 — init JSON logging before the first jlog() call.
+     * We can't call params_init() yet, so we default to disabled here;
+     * do_poll() re-reads JsonLogging every tick and calls jsonlog_init()
+     * so the setting takes effect from the first poll onward.           */
+    jsonlog_init(0, "weather_acap");
+    jlog(LOG_INFO, "weather_acap: starting up (native ACAP v4)");
 
     signal(SIGTERM, on_signal);
     signal(SIGINT,  on_signal);
@@ -750,7 +764,7 @@ int main(void) {
 
     GError *err = NULL;
     if (!params_init(&err)) {
-        syslog(LOG_ERR, "weather_acap: axparameter init failed: %s",
+        jlog(LOG_ERR, "weather_acap: axparameter init failed: %s",
                err ? err->message : "unknown");
         if (err) g_error_free(err);
         return 1;
@@ -775,7 +789,7 @@ int main(void) {
 
     int interval = params_get_int("PollInterval", 300);
     if (interval < MIN_POLL_SEC) interval = MIN_POLL_SEC;
-    syslog(LOG_INFO, "weather_acap: poll interval %d seconds", interval);
+    jlog(LOG_INFO, "weather_acap: poll interval %d seconds", interval);
 
     g_loop     = g_main_loop_new(NULL, FALSE);
     g_timer_id = g_timeout_add_seconds((guint)interval, do_poll, NULL);
@@ -785,7 +799,7 @@ int main(void) {
 
     g_main_loop_run(g_loop);
 
-    syslog(LOG_INFO, "weather_acap: shutting down");
+    jlog(LOG_INFO, "weather_acap: shutting down");
 
     if (g_timer_id) g_source_remove(g_timer_id);
 

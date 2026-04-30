@@ -50,7 +50,7 @@ CGI_LDLIBS    = $(shell pkg-config --libs $(CGI_PKGS)) -lm
 MAIN_SRCS = weather_acap.c nws.c openmeteo.c weather_api.c \
             alerts.c overlay.c params.c cJSON.c \
             vapix.c history.c condhistory.c webhook.c snapshot.c \
-            mqtt.c email.c threshold.c multicam.c axisevents.c lightning.c
+            mqtt.c email.c threshold.c multicam.c axisevents.c lightning.c jsonlog.c
 MAIN_OBJS = $(MAIN_SRCS:.c=.o)
 
 # CGI sources — no params.o (no axparameter), uses file-based config instead

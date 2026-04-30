@@ -129,6 +129,9 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
     /* Sprint 9 — Native AXIS events */
     { "AxisEventsEnabled", "yes" },   /* publish alert/conditions via axevent */
 
+    /* Sprint 13 — structured JSON logging */
+    { "JsonLogging", "no" },   /* "yes" = also emit JSON to stderr for Loki/Splunk */
+
     /* Sprint 12 — Lightning / SPC convective outlook */
     { "LightningEnabled",  "no"  },
     { "LightningPort",     "35"  },   /* virtual input port for lightning risk */
