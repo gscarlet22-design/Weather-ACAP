@@ -1258,6 +1258,97 @@ static AlertOutputConfig build_test_alertout_cfg(void) {
     return cfg;
 }
 
+/* ── Sprint 14 (revision): media clip list ─────────────────────────────── */
+
+/*
+ * Fetch the device's media clip library and return a JSON array of
+ * {id, name} objects.  Parses the VAPIX text format:
+ *
+ *   MaxClips=32
+ *   NumClips=2
+ *   clip[1].id=1
+ *   clip[1].name=emergency_siren.mp3
+ *   clip[1].type=audio/mpeg
+ *   clip[2].id=2
+ *   clip[2].name=tornado_alert.wav
+ *   ...
+ *
+ * Returns {"ok":true,"clips":[{"id":1,"name":"emergency_siren.mp3"},...]}.
+ * On failure or non-200 response returns {"ok":false,"http_code":N,"clips":[]}.
+ */
+static void endpoint_clip_list(void) {
+    char *u = cfg_get("VapixUser");
+    char *p = cfg_get("VapixPass");
+
+    long http_code = 0;
+    char *body = vapix_get("/axis-cgi/mediaclip.cgi?action=list", u, p, &http_code);
+    free(u); free(p);
+
+    json_header();
+
+    if (!body || http_code != 200) {
+        free(body);
+        out_printf("{\"ok\":false,\"http_code\":%ld,\"clips\":[]}\n", http_code);
+        return;
+    }
+
+#define AO_MAX_CLIPS 64
+    struct {
+        int  id;
+        char name[128];
+        int  have_id;
+        int  have_name;
+    } clips[AO_MAX_CLIPS];
+    memset(clips, 0, sizeof(clips));
+    int max_n = 0;
+
+    char *line = body;
+    while (line && *line) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+
+        /* Strip trailing CR (Windows line endings from device) */
+        char *cr = strchr(line, '\r');
+        if (cr) *cr = '\0';
+
+        int  n = 0, id_val = 0;
+        char name_buf[128];
+        /* clip[N].id=INT */
+        if (sscanf(line, "clip[%d].id=%d", &n, &id_val) == 2
+                && n >= 1 && n <= AO_MAX_CLIPS) {
+            clips[n - 1].id      = id_val;
+            clips[n - 1].have_id = 1;
+            if (n > max_n) max_n = n;
+        /* clip[N].name=STRING  — %[^\r\n] captures spaces in the name */
+        } else if (sscanf(line, "clip[%d].name=%127[^\r\n]", &n, name_buf) == 2
+                && n >= 1 && n <= AO_MAX_CLIPS) {
+            strncpy(clips[n - 1].name, name_buf, 127);
+            clips[n - 1].name[127]  = '\0';
+            clips[n - 1].have_name  = 1;
+            if (n > max_n) max_n = n;
+        }
+
+        if (nl) line = nl + 1; else break;
+    }
+    free(body);
+
+    out_puts("{\"ok\":true,\"clips\":[");
+    int first = 1;
+    for (int i = 0; i < max_n; i++) {
+        if (!clips[i].have_id) continue;
+        if (!first) out_putc(',');
+        first = 0;
+        out_printf("{\"id\":%d,\"name\":\"", clips[i].id);
+        if (clips[i].have_name)
+            json_esc_out(clips[i].name);
+        else
+            out_printf("Clip %d", clips[i].id);
+        out_puts("\"}");
+    }
+    out_puts("]}\n");
+#undef AO_MAX_CLIPS
+}
+
 static void endpoint_test_display(void) {
     AlertOutputConfig cfg = build_test_alertout_cfg();
     cfg.strobe_enabled = 0;
@@ -1405,7 +1496,8 @@ static void handle_request(void) {
         endpoint_test_multicam_snap(body ? body : "");
         free(body);
     }
-    /* Sprint 14 — hardware output tests */
+    /* Sprint 14 — hardware output: clip list + tests */
+    else if (strcmp(action, "clip_list")    == 0)             endpoint_clip_list();
     else if (strcmp(action, "test_display") == 0 && is_post) endpoint_test_display();
     else if (strcmp(action, "test_strobe")  == 0 && is_post) endpoint_test_strobe();
     else if (strcmp(action, "test_d4200")   == 0 && is_post) endpoint_test_d4200();

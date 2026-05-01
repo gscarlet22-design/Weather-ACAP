@@ -646,15 +646,23 @@
         </div>
         <div class="card-body">
           <small>Plays a pre-loaded audio clip from the device's media clip library via <code>mediaclip.cgi</code> when an alert activates.
-            Upload clips via the device web UI under <strong>Audio &rarr; Media clips</strong>, then note the clip ID (integer) assigned by the device.</small>
-          <div class="form-grid-2" style="margin-top:0.8rem;">
+            Upload clips via the device web UI under <strong>Audio &rarr; Media clips</strong>, then select them below.</small>
+          <div class="clip-list-header">
+            <span id="hw-clips-status" class="dim small">Loading clips&hellip;</span>
+            <button class="btn btn-ghost btn-small" id="hw-refresh-clips" type="button">&#8635; Refresh</button>
+          </div>
+          <div class="form-grid-2" style="margin-top:0.6rem;">
             <div class="form-row">
-              <label for="f-audio-clip-warning">Warning clip ID <span class="tier-badge tier-warning">Warning</span> <small class="dim">(-1 = disabled)</small></label>
-              <input id="f-audio-clip-warning" type="number" min="-1" placeholder="-1">
+              <label for="f-audio-clip-warning">Warning clip <span class="tier-badge tier-warning">Warning</span></label>
+              <select id="f-audio-clip-warning">
+                <option value="-1">&mdash; disabled &mdash;</option>
+              </select>
             </div>
             <div class="form-row">
-              <label for="f-audio-clip-watch">Watch clip ID <span class="tier-badge tier-watch">Watch</span> <small class="dim">(-1 = disabled)</small></label>
-              <input id="f-audio-clip-watch" type="number" min="-1" placeholder="-1">
+              <label for="f-audio-clip-watch">Watch clip <span class="tier-badge tier-watch">Watch</span></label>
+              <select id="f-audio-clip-watch">
+                <option value="-1">&mdash; disabled &mdash;</option>
+              </select>
             </div>
           </div>
           <div class="form-actions">

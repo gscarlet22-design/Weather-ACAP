@@ -178,8 +178,10 @@
       $("f-d4200-warning-profile").value          = cfg.d4200_warning_profile || "emergency";
       $("f-d4200-watch-profile").value            = cfg.d4200_watch_profile   || "caution";
       $("f-audio-alert-enabled").checked          = (cfg.audio_alert_enabled || "").toLowerCase() === "yes";
-      $("f-audio-clip-warning").value             = cfg.audio_clip_warning !== undefined ? cfg.audio_clip_warning : "-1";
-      $("f-audio-clip-watch").value               = cfg.audio_clip_watch   !== undefined ? cfg.audio_clip_watch   : "-1";
+      /* Store the saved IDs as data attributes; loadClipList() will apply
+       * them to the <select> after populating the option list from the device */
+      $("f-audio-clip-warning").dataset.savedId  = cfg.audio_clip_warning !== undefined ? String(cfg.audio_clip_warning) : "-1";
+      $("f-audio-clip-watch").dataset.savedId    = cfg.audio_clip_watch   !== undefined ? String(cfg.audio_clip_watch)   : "-1";
       /* Multi-camera settings (Sprint 8) */
       $("f-multicam-enabled").checked  = (cfg.multicam_enabled || "").toLowerCase() === "yes";
       $("f-multicam-resolution").value = cfg.multicam_resolution || "1280x720";
@@ -1222,11 +1224,55 @@
     });
   }
 
+  /* Fetch media clips from device and populate both audio clip selects.
+   * Preserves previously saved selection via data-saved-id attribute. */
+  function loadClipList() {
+    var statusEl = $("hw-clips-status");
+    if (statusEl) { statusEl.textContent = "Loading clips\u2026"; statusEl.className = "dim small"; }
+
+    return cgi("clip_list").then(function (r) {
+      var clips = r.clips || [];
+      var selIds = ["f-audio-clip-warning", "f-audio-clip-watch"];
+
+      selIds.forEach(function (id) {
+        var sel = $(id);
+        if (!sel) return;
+        var savedId = sel.dataset.savedId || "-1";
+
+        /* Rebuild option list */
+        sel.innerHTML = '<option value="-1">\u2014 disabled \u2014</option>';
+        clips.forEach(function (clip) {
+          var opt = document.createElement("option");
+          opt.value       = String(clip.id);
+          opt.textContent = clip.name + "  (id\u00a0" + clip.id + ")";
+          sel.appendChild(opt);
+        });
+
+        /* Restore saved selection */
+        sel.value = savedId;
+        /* If the saved id isn't in the list (e.g. clip was deleted) keep the
+         * disabled option selected and clear the stored id so save doesn't
+         * persist a stale value */
+        if (sel.value !== savedId) sel.value = "-1";
+      });
+
+      var msg = clips.length === 0
+        ? "No clips found — upload clips via Audio \u2192 Media clips on the device"
+        : clips.length + " clip" + (clips.length === 1 ? "" : "s") + " found";
+      if (statusEl) { statusEl.textContent = msg; statusEl.className = clips.length ? "ok small" : "dim small"; }
+    }).catch(function (e) {
+      if (statusEl) { statusEl.textContent = "Could not load clips: " + e.message; statusEl.className = "bad small"; }
+    });
+  }
+
   function initHardwareOutput() {
     /* Wire color pickers ↔ hex inputs */
     bindColorPair("f-display-alert-text-color");
     bindColorPair("f-display-alert-bg-warning");
     bindColorPair("f-display-alert-bg-watch");
+
+    /* Refresh clip list button */
+    $("hw-refresh-clips").addEventListener("click", loadClipList);
 
     /* Test display */
     $("hw-test-display").addEventListener("click", function () {
@@ -1324,6 +1370,7 @@
         pollStatus();
         refreshHistory();
         refreshSparklines();
+        loadClipList();   /* populate audio clip dropdowns after config IDs are stored */
       })
       .catch(function (e) {
         toast("Failed to load config: " + e.message, "error");

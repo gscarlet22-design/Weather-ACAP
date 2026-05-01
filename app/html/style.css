@@ -1016,3 +1016,11 @@ pre {
   font-family: var(--mono);
   font-size: 0.85rem;
 }
+
+/* Clip list status + refresh button row */
+.clip-list-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
