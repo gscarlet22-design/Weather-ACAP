@@ -5,6 +5,7 @@
  */
 
 #include "alertoutput.h"
+#include "cJSON.h"
 
 #include <curl/curl.h>
 #include <ctype.h>
@@ -43,6 +44,171 @@ static void ao_json_esc(const char *src, char *dst, size_t dstlen) {
         else                            { dst[j++] = c; }
     }
     dst[j] = '\0';
+}
+
+/* ── Strobe color capability probe ──────────────────────────────────────── */
+
+/*
+ * Table of known color name → RGB values.
+ * Must cover every name a siren_and_light.cgi device might return.
+ */
+typedef struct { const char *name; int r, g, b; } AoColor;
+static const AoColor ao_palette_table[] = {
+    { "red",       255,   0,   0 },
+    { "green",       0, 200,   0 },
+    { "blue",        0,   0, 255 },
+    { "white",     255, 255, 255 },
+    { "yellow",    255, 255,   0 },
+    { "cyan",        0, 255, 255 },
+    { "magenta",   255,   0, 255 },
+    { "orange",    255, 165,   0 },
+    { "amber",     255, 176,   0 },
+    { "warmwhite", 255, 244, 229 },
+    { "pink",      255,  20, 147 },
+    { "purple",    128,   0, 128 },
+    { NULL, 0, 0, 0 }
+};
+
+/* Map a color name to its RGB triple.  Returns 1 on success, 0 if unknown. */
+static int ao_name_to_rgb(const char *name, int *r, int *g, int *b) {
+    if (!name) return 0;
+    for (int i = 0; ao_palette_table[i].name; i++) {
+        if (strcasecmp(ao_palette_table[i].name, name) == 0) {
+            *r = ao_palette_table[i].r;
+            *g = ao_palette_table[i].g;
+            *b = ao_palette_table[i].b;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Cache: filled on the first successful probe per process lifetime.
+ * The device palette never changes at runtime, so one probe is enough.
+ */
+static char s_warn_color[64] = "";   /* nearest to red   for Warning tier */
+static char s_watch_color[64] = "";  /* nearest to amber for Watch tier   */
+
+/*
+ * Query siren_and_light.cgi getCapabilities and find the supported color
+ * whose name's RGB value is nearest (Euclidean) to (tr, tg, tb).
+ * Result is stored into `out` (up to outlen bytes); falls back to `fallback`.
+ */
+static void ao_probe_best_color(int tr, int tg, int tb,
+                                const char *fallback,
+                                const char *vuser, const char *vpass,
+                                char *out, size_t outlen) {
+    snprintf(out, outlen, "%s", fallback ? fallback : "red");
+
+    char cred[256];
+    snprintf(cred, sizeof(cred), "%s:%s",
+             vuser ? vuser : "root", vpass ? vpass : "");
+
+    static const char *req =
+        "{\"apiVersion\":\"1.0\",\"method\":\"getCapabilities\",\"params\":{}}";
+
+    struct curl_slist *hdrs = curl_slist_append(NULL,
+                                                "Content-Type: application/json");
+    CURL *c = curl_easy_init();
+    if (!c) { curl_slist_free_all(hdrs); return; }
+
+    AoBuf buf = {NULL, 0};
+    curl_easy_setopt(c, CURLOPT_URL,
+                     "http://127.0.0.1/axis-cgi/siren_and_light.cgi");
+    curl_easy_setopt(c, CURLOPT_USERPWD,        cred);
+    curl_easy_setopt(c, CURLOPT_HTTPAUTH,        CURLAUTH_DIGEST);
+    curl_easy_setopt(c, CURLOPT_HTTPHEADER,      hdrs);
+    curl_easy_setopt(c, CURLOPT_COPYPOSTFIELDS,  req);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION,   ao_write_cb);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA,       &buf);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT,         5L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT,  3L);
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL,        1L);
+
+    CURLcode rc = curl_easy_perform(c);
+    long http_code = -1;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(c);
+
+    if (rc != CURLE_OK || http_code != 200 || !buf.data) {
+        syslog(LOG_WARNING,
+               "alertoutput/color-probe: curl=%s http=%ld — using fallback '%s'",
+               curl_easy_strerror(rc), http_code, out);
+        free(buf.data);
+        return;
+    }
+
+    /* Parse: .data.capabilities.light.supportedPatterns[N].colors.possible[] */
+    cJSON *root = cJSON_Parse(buf.data);
+    free(buf.data);
+    if (!root) {
+        syslog(LOG_WARNING, "alertoutput/color-probe: JSON parse failed");
+        return;
+    }
+
+    cJSON *data     = cJSON_GetObjectItem(root, "data");
+    cJSON *caps     = data     ? cJSON_GetObjectItem(data,  "capabilities") : NULL;
+    cJSON *light    = caps     ? cJSON_GetObjectItem(caps,  "light")        : NULL;
+    cJSON *patterns = light    ? cJSON_GetObjectItem(light, "supportedPatterns") : NULL;
+
+    int best_dist = 0x7fffffff;
+    char best_name[64] = "";
+
+    if (cJSON_IsArray(patterns)) {
+        int np = cJSON_GetArraySize(patterns);
+        for (int pi = 0; pi < np; pi++) {
+            cJSON *pat     = cJSON_GetArrayItem(patterns, pi);
+            cJSON *col_obj = pat ? cJSON_GetObjectItem(pat, "colors") : NULL;
+            cJSON *possible = col_obj ? cJSON_GetObjectItem(col_obj, "possible") : NULL;
+            if (!cJSON_IsArray(possible)) continue;
+
+            int nc = cJSON_GetArraySize(possible);
+            for (int ci = 0; ci < nc; ci++) {
+                cJSON *ce = cJSON_GetArrayItem(possible, ci);
+                if (!cJSON_IsString(ce) || !ce->valuestring) continue;
+
+                int r = 0, g = 0, b = 0;
+                if (!ao_name_to_rgb(ce->valuestring, &r, &g, &b)) continue;
+
+                int dr = r - tr, dg = g - tg, db = b - tb;
+                int dist = dr*dr + dg*dg + db*db;
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    snprintf(best_name, sizeof(best_name),
+                             "%s", ce->valuestring);
+                }
+            }
+        }
+    }
+    cJSON_Delete(root);
+
+    if (best_name[0]) {
+        snprintf(out, outlen, "%s", best_name);
+        syslog(LOG_INFO,
+               "alertoutput/color-probe: target=(%d,%d,%d) → '%s' dist=%d",
+               tr, tg, tb, out, best_dist);
+    } else {
+        syslog(LOG_WARNING,
+               "alertoutput/color-probe: palette empty/unrecognised — using '%s'",
+               out);
+    }
+}
+
+/*
+ * Fill the per-tier color cache if not already done.
+ * Warning → nearest to red   (255,   0, 0), fallback "red"
+ * Watch   → nearest to amber (255, 176, 0), fallback "yellow"
+ * (Yellow is the most common warm color in standard AXIS palettes.)
+ */
+static void ao_ensure_colors(const char *vuser, const char *vpass) {
+    if (!s_warn_color[0])
+        ao_probe_best_color(255,   0, 0, "red",    vuser, vpass,
+                            s_warn_color,  sizeof(s_warn_color));
+    if (!s_watch_color[0])
+        ao_probe_best_color(255, 176, 0, "yellow", vuser, vpass,
+                            s_watch_color, sizeof(s_watch_color));
 }
 
 /* ── Severity classification ─────────────────────────────────────────────── */
@@ -127,6 +293,8 @@ static void display_show(const char *message,
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION,   ao_write_cb);
     curl_easy_setopt(c, CURLOPT_WRITEDATA,       &buf);
     curl_easy_setopt(c, CURLOPT_TIMEOUT,         5L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT,  3L);
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL,        1L);
 
     CURLcode rc  = curl_easy_perform(c);
     long http_code = -1;
@@ -190,6 +358,8 @@ static void strobe_start(const char *color,
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION,   ao_write_cb);
     curl_easy_setopt(c, CURLOPT_WRITEDATA,       &buf);
     curl_easy_setopt(c, CURLOPT_TIMEOUT,         5L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT,  3L);
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL,        1L);
 
     CURLcode rc = curl_easy_perform(c);
     long http_code = -1;
@@ -242,14 +412,16 @@ static void d4200_start_profile(const char *host,
     }
 
     AoBuf buf = {NULL, 0};
-    curl_easy_setopt(c, CURLOPT_URL,           url);
-    curl_easy_setopt(c, CURLOPT_USERPWD,       cred);
-    curl_easy_setopt(c, CURLOPT_HTTPAUTH,       CURLAUTH_DIGEST);
-    curl_easy_setopt(c, CURLOPT_HTTPHEADER,     hdrs);
-    curl_easy_setopt(c, CURLOPT_COPYPOSTFIELDS, body);
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION,  ao_write_cb);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA,      &buf);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT,        5L);
+    curl_easy_setopt(c, CURLOPT_URL,            url);
+    curl_easy_setopt(c, CURLOPT_USERPWD,        cred);
+    curl_easy_setopt(c, CURLOPT_HTTPAUTH,        CURLAUTH_DIGEST);
+    curl_easy_setopt(c, CURLOPT_HTTPHEADER,      hdrs);
+    curl_easy_setopt(c, CURLOPT_COPYPOSTFIELDS,  body);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION,   ao_write_cb);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA,       &buf);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT,         5L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT,  3L);
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL,        1L);
 
     CURLcode rc = curl_easy_perform(c);
     long http_code = -1;
@@ -291,12 +463,14 @@ static void audio_play_clip(int clip_id,
     }
 
     AoBuf buf = {NULL, 0};
-    curl_easy_setopt(c, CURLOPT_URL,           url);
-    curl_easy_setopt(c, CURLOPT_USERPWD,       cred);
-    curl_easy_setopt(c, CURLOPT_HTTPAUTH,       CURLAUTH_DIGEST);
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION,  ao_write_cb);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA,      &buf);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT,        5L);
+    curl_easy_setopt(c, CURLOPT_URL,            url);
+    curl_easy_setopt(c, CURLOPT_USERPWD,        cred);
+    curl_easy_setopt(c, CURLOPT_HTTPAUTH,        CURLAUTH_DIGEST);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION,   ao_write_cb);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA,       &buf);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT,         5L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT,  3L);
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL,        1L);
 
     CURLcode rc = curl_easy_perform(c);
     long http_code = -1;
@@ -345,10 +519,14 @@ void alertoutput_on_activate(const char *nws_event,
 
     /* ── 2. Local strobe ─────────────────────────────────────────────── */
     if (cfg->strobe_enabled) {
-        /* Warning: red, fast Pulse.  Watch: amber, slow Pulse. */
-        const char *color   = (tier == ALERT_TIER_WARNING) ? "red"   : "amber";
-        int         speed   = (tier == ALERT_TIER_WARNING) ? 3       : 1;
-        int         intens  = (tier == ALERT_TIER_WARNING) ? 5       : 4;
+        /* Probe the device palette once to find the best-match color name.
+         * Results are cached in s_warn_color / s_watch_color for the
+         * lifetime of the process so subsequent alerts are instant.        */
+        ao_ensure_colors(cfg->vapix_user, cfg->vapix_pass);
+        const char *color  = (tier == ALERT_TIER_WARNING)
+                             ? s_warn_color : s_watch_color;
+        int         speed  = (tier == ALERT_TIER_WARNING) ? 3 : 1;
+        int         intens = (tier == ALERT_TIER_WARNING) ? 5 : 4;
         strobe_start(color, "Pulse", speed, intens,
                      cfg->strobe_duration_s,
                      cfg->vapix_user, cfg->vapix_pass);
@@ -377,7 +555,13 @@ void alertoutput_on_activate(const char *nws_event,
 void alertoutput_on_clear(const char *nws_event,
                            const AlertOutputConfig *cfg) {
     (void)nws_event;
-    /* The strobe self-terminates via its duration; the speaker display
-     * expires automatically.  Reserved for future explicit-stop support. */
     (void)cfg;
+    /* The strobe self-terminates via its duration; the speaker display
+     * expires automatically.  Reserved for future explicit-stop support.
+     *
+     * Reset the color cache so a fresh probe is done on the next activation.
+     * This guards against stale entries surviving a device firmware update or
+     * a credential change between alerts.                                   */
+    s_warn_color[0]  = '\0';
+    s_watch_color[0] = '\0';
 }

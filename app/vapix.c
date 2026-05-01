@@ -74,10 +74,14 @@ char *vapix_get(const char *path, const char *user, const char *pass,
 
     Buf buf = { NULL, 0 };
     set_auth(curl, user, pass);
-    curl_easy_setopt(curl, CURLOPT_URL,           url);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       10L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &buf);
+    curl_easy_setopt(curl, CURLOPT_URL,            url);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        10L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 4L);
+    /* NOSIGNAL: FastCGI owns signal handling; curl's SIGALRM-based timeout
+     * is unreliable here — use socket-level timeouts instead. */
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &buf);
 
     CURLcode rc = curl_easy_perform(curl);
     long http_code = 0;
