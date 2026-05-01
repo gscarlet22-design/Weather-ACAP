@@ -1361,15 +1361,29 @@ static void endpoint_test_display(void) {
     out_puts("{\"ok\":true,\"msg\":\"Display notification sent\"}\n");
 }
 
-static void endpoint_test_strobe(void) {
+static void endpoint_test_strobe(const char *body) {
+    /* Read tier from form-encoded POST body: tier=warning | tier=watch */
+    KV kv[4] = {0};
+    int n = parse_kv(body, kv, 4);
+    const char *tier_s = get_kv(kv, n, "tier");
+    int is_watch = tier_s && strcmp(tier_s, "watch") == 0;
+    free_kv(kv, n);
+
     AlertOutputConfig cfg = build_test_alertout_cfg();
-    cfg.display_enabled = 0;
-    cfg.d4200_enabled   = 0;
-    cfg.audio_enabled   = 0;
+    cfg.display_enabled   = 0;
+    cfg.d4200_enabled     = 0;
+    cfg.audio_enabled     = 0;
     cfg.strobe_duration_s = 5;   /* short test burst */
-    alertoutput_on_activate("Tornado Warning", NULL, &cfg);
+
+    /* Pass the NWS event string that matches the requested tier so that
+     * alertoutput_classify() returns the correct severity level:
+     *   "Tornado Warning" → ALERT_TIER_WARNING → red fast Pulse
+     *   "Tornado Watch"   → ALERT_TIER_WATCH   → amber slow Pulse     */
+    alertoutput_on_activate(is_watch ? "Tornado Watch" : "Tornado Warning",
+                             NULL, &cfg);
     json_header();
-    out_puts("{\"ok\":true,\"msg\":\"Strobe start sent (5 s)\"}\n");
+    out_printf("{\"ok\":true,\"msg\":\"Strobe start sent (5 s, %s tier)\"}\n",
+               is_watch ? "watch/amber" : "warning/red");
 }
 
 static void endpoint_test_d4200(void) {
@@ -1499,7 +1513,11 @@ static void handle_request(void) {
     /* Sprint 14 — hardware output: clip list + tests */
     else if (strcmp(action, "clip_list")    == 0)             endpoint_clip_list();
     else if (strcmp(action, "test_display") == 0 && is_post) endpoint_test_display();
-    else if (strcmp(action, "test_strobe")  == 0 && is_post) endpoint_test_strobe();
+    else if (strcmp(action, "test_strobe")  == 0 && is_post) {
+        char *body = read_post_body();
+        endpoint_test_strobe(body ? body : "");
+        free(body);
+    }
     else if (strcmp(action, "test_d4200")   == 0 && is_post) endpoint_test_d4200();
     else if (strcmp(action, "test_audio")   == 0 && is_post) endpoint_test_audio(qs);
     else {
