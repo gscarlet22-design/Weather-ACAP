@@ -100,6 +100,11 @@
       $("f-provider").value       = cfg.weather_provider || "auto";
       $("f-interval").value       = cfg.poll_interval || "300";
       $("f-ua").value             = cfg.nws_user_agent || "";
+      $("f-ua").placeholder       = "WeatherACAP/" + (cfg.app_version || "") + " (you@example.com)";
+      var verEl = $("app-version");
+      if (verEl) verEl.textContent = cfg.app_version ? "v" + cfg.app_version : "";
+      if (cfg.config_ok === false)
+        toast("Daemon config not available yet — saves are disabled until it starts", "warn");
       /* Overlay */
       $("f-overlay-enabled").checked   = (cfg.overlay_enabled || "").toLowerCase() === "yes";
       $("f-overlay-position").value    = cfg.overlay_position || "topLeft";
@@ -196,7 +201,7 @@
       pairs.push(encField("zip",              $("f-zip").value.trim()));
       pairs.push(encField("lat_override",     $("f-lat").value.trim()));
       pairs.push(encField("lon_override",     $("f-lon").value.trim()));
-      pairs.push(encField("weather_provider", $("f-provider").value));
+      pairs.push(encField("weather_provider", $("f-provider").value || "auto"));
       pairs.push(encField("poll_interval",    $("f-interval").value));
       pairs.push(encField("nws_user_agent",   $("f-ua").value.trim()));
     } else if (section === "alerts") {
@@ -211,20 +216,20 @@
       pairs.push(encField("lightning_poll_mult", $("f-lightning-poll-mult").value || "6"));
     } else if (section === "overlay") {
       pairs.push(encField("overlay_enabled",        $("f-overlay-enabled").checked ? "yes" : "no"));
-      pairs.push(encField("overlay_position",       $("f-overlay-position").value));
+      pairs.push(encField("overlay_position",       $("f-overlay-position").value || "topLeft"));
       pairs.push(encField("overlay_max_alerts",     $("f-overlay-max").value));
       pairs.push(encField("overlay_template",       $("f-overlay-template").value));
       pairs.push(encField("overlay_alert_template", $("f-overlay-alert-template").value));
     } else if (section === "snapshots") {
       pairs.push(encField("snapshot_enabled",     $("f-snapshot-enabled").checked ? "yes" : "no"));
-      pairs.push(encField("snapshot_resolution",  $("f-snapshot-resolution").value));
+      pairs.push(encField("snapshot_resolution",  $("f-snapshot-resolution").value || "1280x720"));
       pairs.push(encField("snapshot_save_dir",    $("f-snapshot-save-dir").value.trim()));
       pairs.push(encField("snapshot_on_activate", $("f-snapshot-on-activate").checked ? "yes" : "no"));
       pairs.push(encField("snapshot_on_clear",    $("f-snapshot-on-clear").checked ? "yes" : "no"));
       pairs.push(encField("snapshot_max_count",   $("f-snapshot-max-count").value || "50"));
       /* Sprint 8 — multi-camera */
       pairs.push(encField("multicam_enabled",    $("f-multicam-enabled").checked ? "yes" : "no"));
-      pairs.push(encField("multicam_resolution", $("f-multicam-resolution").value));
+      pairs.push(encField("multicam_resolution", $("f-multicam-resolution").value || "1280x720"));
       pairs.push(encField("multicam_list",       serializeMultiCamList()));
     } else if (section === "hardware") {
       /* Sprint 14 — hardware alert output */
@@ -288,8 +293,13 @@
         btn.textContent = "Saving\u2026";
         cgi("save", { body: gatherFields(section) })
           .then(function (r) {
-            if (r.ok) toast("Settings saved (" + r.saved + " fields)", "ok");
-            else toast("Save had errors: " + (r.errors || 0) + " fields failed", "error");
+            if (r.ok) {
+              var msg = "Settings saved (" + r.saved + " fields)";
+              if (r.clamped) msg += " — " + r.clamped + " value(s) adjusted to the allowed range";
+              toast(msg, r.clamped ? "warn" : "ok");
+            } else {
+              toast("Save failed: " + (r.error || "unknown error"), "error");
+            }
           })
           .catch(function (e) { toast("Save failed: " + e.message, "error"); })
           .then(function () {
@@ -518,26 +528,32 @@
 
   /* ── Multi-camera table (Sprint 8) ─────────────────────────────────────── */
 
+  /* Wire format: host:user:pass:label, or host:PORT:user:pass:label when the
+   * second field is all digits (matches multicam.c).  Passwords arrive as
+   * "__SET__" from the CGI — it never echoes the real value — and are sent
+   * back as "__SET__" when the field is left untouched. */
   function parseMultiCamList(listStr) {
     if (!listStr) return [];
     return listStr.split("|").filter(Boolean).map(function (seg) {
       var p = seg.split(":");
-      return {
-        host:  p[0] || "",
-        user:  p[1] || "root",
-        pass:  p[2] || "",
-        label: p[3] || ""
-      };
+      if (p.length >= 5 && /^\d+$/.test(p[1])) {
+        return { host: p[0] + ":" + p[1], user: p[2] || "root", pass: p[3] || "",
+                 label: p.slice(4).join(":") };
+      }
+      return { host: p[0] || "", user: p[1] || "root", pass: p[2] || "",
+               label: p.slice(3).join(":") };
     });
   }
 
   function serializeMultiCamList() {
     var rows = [];
     $$(".mc-row").forEach(function (tr) {
-      var host  = tr.querySelector(".mc-host").value.trim();
-      var user  = tr.querySelector(".mc-user").value.trim();
-      var pass  = tr.querySelector(".mc-pass").value;
-      var label = tr.querySelector(".mc-label").value.trim();
+      var host   = tr.querySelector(".mc-host").value.trim();
+      var user   = tr.querySelector(".mc-user").value.trim();
+      var passEl = tr.querySelector(".mc-pass");
+      var pass   = passEl.value;
+      if (!pass && passEl.dataset.hadPass === "1") pass = "__SET__";
+      var label  = tr.querySelector(".mc-label").value.trim();
       if (host) rows.push(host + ":" + user + ":" + pass + ":" + label);
     });
     return rows.join("|");
@@ -556,10 +572,13 @@
     var tbody = $("multicam-tbody");
     var tr = document.createElement("tr");
     tr.className = "mc-row";
+    var hadPass = (pass === "__SET__");
     tr.innerHTML =
-      '<td><input type="text"     class="mc-host"  value="' + escHtml(host  || "") + '" placeholder="192.168.1.10"></td>' +
+      '<td><input type="text"     class="mc-host"  value="' + escHtml(host  || "") + '" placeholder="192.168.1.10[:port]"></td>' +
       '<td><input type="text"     class="mc-user"  value="' + escHtml(user  || "root") + '" autocomplete="username"></td>' +
-      '<td><input type="password" class="mc-pass"  value="' + escHtml(pass  || "") + '" autocomplete="new-password" placeholder="password"></td>' +
+      '<td><input type="password" class="mc-pass"  value="' + (hadPass ? "" : escHtml(pass || "")) +
+           '" data-had-pass="' + (hadPass ? "1" : "0") + '" autocomplete="new-password" placeholder="' +
+           (hadPass ? "(unchanged)" : "password") + '"></td>' +
       '<td><input type="text"     class="mc-label" value="' + escHtml(label || "") + '" placeholder="e.g. Parking Lot"></td>' +
       '<td>' +
         '<button class="btn btn-ghost btn-small mc-test" type="button">Test</button>' +
@@ -573,9 +592,13 @@
     tr.querySelector(".mc-test").addEventListener("click", function () {
       var h = tr.querySelector(".mc-host").value.trim();
       var u = tr.querySelector(".mc-user").value.trim();
-      var p = tr.querySelector(".mc-pass").value;
+      var pEl = tr.querySelector(".mc-pass");
+      var p = pEl.value;
       var res = tr.querySelector(".row-test-result");
       if (!h) { res.textContent = "enter host"; res.className = "row-test-result bad"; return; }
+      if (!p && pEl.dataset.hadPass === "1") {
+        res.textContent = "re-enter password to test"; res.className = "row-test-result bad"; return;
+      }
       res.textContent = "\u2026";
       res.className = "row-test-result busy";
       cgi("test_multicam_snap", { method: "POST",
@@ -633,18 +656,44 @@
       $("current-desc").textContent = c.valid ? c.description : "No data";
 
       var pill = $("status-pill");
-      if (!c.valid) {
-        pill.textContent = "No data";
-        pill.className = "pill pill-neutral";
-      } else if (s.any_alert_active) {
+      if (s.any_alert_active) {
         pill.textContent = "Alert active";
         pill.className = "pill pill-alert";
+      } else if (s.alerts_fetch_ok === false) {
+        pill.textContent = "NWS unreachable";
+        pill.className = "pill pill-warning";
+        pill.title = "Alert feed could not be fetched; port state is being held, not cleared";
+      } else if (!c.valid) {
+        pill.textContent = "No data";
+        pill.className = "pill pill-neutral";
       } else if (s.last_error && s.last_error !== "") {
         pill.textContent = "Error";
         pill.className = "pill pill-warning";
+        pill.title = s.last_error;
       } else {
         pill.textContent = "OK";
         pill.className = "pill pill-ok";
+        pill.title = "";
+      }
+
+      /* Overlay diagnostics — surface the two conditions that used to fail silently */
+      var ovWarn = $("overlay-limit-warn");
+      if (ovWarn) {
+        if (s.overlay_limit_reached) {
+          ovWarn.textContent = "The camera's overlay limit is reached — orphaned overlays from earlier runs are occupying every slot. Use Diagnostics → “Remove all text overlays” once.";
+          ovWarn.style.display = "";
+        } else {
+          ovWarn.style.display = "none";
+        }
+      }
+      var ovHint = $("overlay-video-hint");
+      if (ovHint) {
+        if (s.video_present === false)
+          ovHint.textContent = "The device reported no video channel (or VAPIX authentication failed) on the last poll — the overlay is skipped. Check the VAPIX credentials on the Advanced tab.";
+        else if (s.overlay_id !== undefined && s.overlay_id >= 0)
+          ovHint.textContent = "Overlay is live on the camera (handle " + s.overlay_id + "). The template below is pushed on every poll.";
+        else
+          ovHint.textContent = "If your device has a camera, the template below is pushed to the video as a text overlay via the VAPIX overlay API.";
       }
 
       /* Dashboard — conditions */
@@ -728,7 +777,7 @@
     /* Determine which alerts are active */
     var activeEvents = {};
     (snap.alerts || []).forEach(function (a) {
-      activeEvents[a.event.toLowerCase()] = true;
+      activeEvents[(a.event || "").toLowerCase()] = true;
     });
 
     var html = "";
@@ -857,6 +906,28 @@
         toast("All ports cleared", "ok");
       }).catch(function (e) { setDiag("diag-manual-result", "Error: " + e.message, "bad"); });
     });
+
+    /* Overlay purge \u2014 one-shot cleanup for cameras left with stacked overlays */
+    var purgeBtn = $("diag-overlay-purge");
+    if (purgeBtn) purgeBtn.addEventListener("click", function () {
+      if (!confirm("Remove ALL runtime text overlays on this camera?\n\nThis clears overlays left behind by earlier versions of this app (and any other app's dynamic text overlays). The daemon re-creates its own overlay immediately afterwards.\n\nContinue?")) return;
+      setDiag("diag-result-overlay", "Removing\u2026", "busy");
+      cgi("overlay_purge", { method: "POST", body: "" }).then(function (r) {
+        setDiag("diag-result-overlay", r.ok ? r.msg : ("Failed: " + (r.error || "")), r.ok ? "ok" : "bad");
+        if (r.ok) toast("Removed " + r.removed + " overlay(s)", "ok");
+      }).catch(function (e) { setDiag("diag-result-overlay", "Error: " + e.message, "bad"); });
+    });
+
+    /* Poll now (Dashboard) */
+    var pollBtn = $("dash-poll-now");
+    if (pollBtn) pollBtn.addEventListener("click", function () {
+      pollBtn.disabled = true;
+      cgi("poll_now", { method: "POST", body: "" }).then(function () {
+        toast("Poll requested \u2014 dashboard refreshes within a few seconds", "ok");
+        setTimeout(function () { pollStatus(); refreshHistory(); refreshOverlayPreview(); }, 4000);
+      }).catch(function (e) { toast("Poll request failed: " + e.message, "error"); })
+        .then(function () { setTimeout(function () { pollBtn.disabled = false; }, 4000); });
+    });
   }
 
   /* ── Device info ────────────────────────────────────────────────────────── */
@@ -894,7 +965,8 @@
       var li = document.createElement("li");
       var when = e.ts || "";
       if (when.length > 19) when = when.substring(0, 19).replace("T", " ");
-      var actionCls = e.action === "fire" ? "act-fire" : "act-clear";
+      /* daemon writes "activated" / "cleared" / "firedrill" */
+      var actionCls = (e.action === "activated" || e.action === "firedrill") ? "act-fire" : "act-clear";
       li.innerHTML = '<span class="when">' + escHtml(when) + '</span>' +
                      '<span class="what"><span class="' + actionCls + '">' +
                      escHtml(e.action || "") + '</span> ' +
@@ -908,8 +980,11 @@
     cgi("ports").then(function (r) {
       maxPorts = r.max_ports || 32;
       $("ports-max-info").textContent = maxPorts + " virtual ports available";
-      /* Update existing port inputs */
+      /* Update existing port inputs (alert rows, threshold rows, lightning) */
       $$(".ar-port").forEach(function (inp) { inp.max = maxPorts; });
+      $$(".tr-port").forEach(function (inp) { inp.max = maxPorts; });
+      var lp = $("f-lightning-port");
+      if (lp) lp.max = maxPorts;
     }).catch(function () { /* keep default */ });
   }
 
@@ -928,10 +1003,11 @@
         if (!confirm("Import config from " + file.name + "?\n\nThis will overwrite current settings.")) return;
         cgi("import", { body: text, json: true }).then(function (r) {
           if (r.ok) {
-            toast("Config imported (" + r.saved + " fields)", "ok");
+            toast("Config imported (" + r.saved + " fields" +
+                  (r.clamped ? ", " + r.clamped + " adjusted" : "") + ")", "ok");
             loadConfig();
           } else {
-            toast("Import had errors", "error");
+            toast("Import failed: " + (r.error || "unknown error"), "error");
           }
         }).catch(function (err) { toast("Import failed: " + err.message, "error"); });
       };
@@ -1228,11 +1304,36 @@
    * Preserves previously saved selection via data-saved-id attribute. */
   function loadClipList() {
     var statusEl = $("hw-clips-status");
-    if (statusEl) { statusEl.textContent = "Loading clips\u2026"; statusEl.className = "dim small"; }
+    if (statusEl) { statusEl.textContent = "Loading clips…"; statusEl.className = "dim small"; }
+
+    var selIds = ["f-audio-clip-warning", "f-audio-clip-watch"];
+
+    /* When the list can't be fetched, keep the saved id selectable so a
+     * Hardware-tab save (all four cards share one section) doesn't wipe it. */
+    function keepSavedOnly(reason) {
+      selIds.forEach(function (id) {
+        var sel = $(id);
+        if (!sel) return;
+        var savedId = sel.dataset.savedId || "-1";
+        sel.innerHTML = '<option value="-1">— disabled —</option>';
+        if (savedId !== "-1") {
+          var opt = document.createElement("option");
+          opt.value = savedId;
+          opt.textContent = "Saved clip id " + savedId + " (list unavailable)";
+          sel.appendChild(opt);
+        }
+        sel.value = savedId;
+      });
+      if (statusEl) { statusEl.textContent = "Could not load clips: " + reason; statusEl.className = "bad small"; }
+    }
 
     return cgi("clip_list").then(function (r) {
+      if (r.ok === false) {
+        keepSavedOnly("device returned HTTP " + (r.http_code || 0) +
+                      " — mediaclip.cgi may not exist on this model, or VAPIX credentials are wrong");
+        return;
+      }
       var clips = r.clips || [];
-      var selIds = ["f-audio-clip-warning", "f-audio-clip-watch"];
 
       selIds.forEach(function (id) {
         var sel = $(id);
@@ -1240,28 +1341,26 @@
         var savedId = sel.dataset.savedId || "-1";
 
         /* Rebuild option list */
-        sel.innerHTML = '<option value="-1">\u2014 disabled \u2014</option>';
+        sel.innerHTML = '<option value="-1">— disabled —</option>';
         clips.forEach(function (clip) {
           var opt = document.createElement("option");
           opt.value       = String(clip.id);
-          opt.textContent = clip.name + "  (id\u00a0" + clip.id + ")";
+          opt.textContent = clip.name + "  (id " + clip.id + ")";
           sel.appendChild(opt);
         });
 
-        /* Restore saved selection */
+        /* Restore saved selection; if the clip was deleted on the device,
+         * fall back to disabled (the list is authoritative here). */
         sel.value = savedId;
-        /* If the saved id isn't in the list (e.g. clip was deleted) keep the
-         * disabled option selected and clear the stored id so save doesn't
-         * persist a stale value */
         if (sel.value !== savedId) sel.value = "-1";
       });
 
       var msg = clips.length === 0
-        ? "No clips found — upload clips via Audio \u2192 Media clips on the device"
+        ? "No clips found — upload clips via Audio → Media clips on the device"
         : clips.length + " clip" + (clips.length === 1 ? "" : "s") + " found";
       if (statusEl) { statusEl.textContent = msg; statusEl.className = clips.length ? "ok small" : "dim small"; }
     }).catch(function (e) {
-      if (statusEl) { statusEl.textContent = "Could not load clips: " + e.message; statusEl.className = "bad small"; }
+      keepSavedOnly(e.message);
     });
   }
 

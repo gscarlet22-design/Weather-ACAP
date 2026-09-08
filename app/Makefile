@@ -4,7 +4,8 @@
 # The SDK environment-setup-* script sets CC, CFLAGS, LDFLAGS, PKG_CONFIG_PATH.
 # acap-build calls 'make', then packages:
 #   - the binary named <appName> (weather_acap)         → package root
-#   - the binary declared by manifest httpConfig.name   → package root
+#   - the CGI binary ONLY when passed as "acap-build . -a weather_acap.cgi"
+#     (it is NOT picked up from httpConfig.name automatically)
 #   - the html/ directory (static UI assets only)       → html/
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,9 @@ else
 endif
 
 CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
+# Header dependency tracking so an incremental build after a .h change
+# rebuilds the right objects (CI always does make clean first).
+CFLAGS += -MMD -MP
 
 DAEMON_CFLAGS = $(shell pkg-config --cflags $(DAEMON_PKGS))
 DAEMON_LDLIBS = $(shell pkg-config --libs $(DAEMON_PKGS)) -lm
@@ -65,14 +69,14 @@ CGI_SHARED_OBJS = cgi_cJSON.o cgi_vapix.o cgi_weather_api.o cgi_nws.o \
 
 all: $(MAIN_PROG) $(CGI_PROG)
 
-# ── Daemon objects (compiled with glib/axparameter flags) ────────────────
+# ── Daemon objects (glib + libcurl flags; axevent when the SDK has it) ───
 $(MAIN_OBJS): %.o: %.c
 	$(CC) $(CFLAGS) $(DAEMON_CFLAGS) $(AXEVENT_CFLAGS) $(AXEVENT_DEFINE) -c -o $@ $<
 
 $(MAIN_PROG): $(MAIN_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(DAEMON_LDLIBS) $(AXEVENT_LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(DAEMON_LDLIBS) $(AXEVENT_LIBS)
 
-# ── CGI objects (compiled with -DCGI_NO_CURL, linked against libfcgi) ───
+# ── CGI objects (same sources, libfcgi + libcurl; NO -DCGI_NO_CURL) ──────
 cgi_config_cgi.o: config_cgi.c
 	$(CC) $(CFLAGS) $(CGI_CFLAGS) -c -o $@ $<
 
@@ -80,7 +84,11 @@ cgi_%.o: %.c
 	$(CC) $(CFLAGS) $(CGI_CFLAGS) -c -o $@ $<
 
 $(CGI_PROG): cgi_config_cgi.o $(CGI_SHARED_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(CGI_LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(CGI_LDLIBS)
+
+# The SDK environment exports LDFLAGS (RELRO, BIND_NOW, --as-needed); the
+# link lines above used to drop it, shipping un-hardened binaries.
+-include $(MAIN_OBJS:.o=.d) $(CGI_SHARED_OBJS:.o=.d) cgi_config_cgi.d
 
 clean:
-	$(RM) *.o cgi_*.o $(MAIN_PROG) $(CGI_PROG)
+	$(RM) *.o *.d cgi_*.o $(MAIN_PROG) $(CGI_PROG)

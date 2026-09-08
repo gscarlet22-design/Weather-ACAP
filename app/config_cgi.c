@@ -35,6 +35,7 @@
 #include "threshold.h"
 #include "multicam.h"
 #include "alertoutput.h"
+#include "version.h"
 
 #include <fcgiapp.h>
 
@@ -44,6 +45,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -91,10 +93,28 @@ static const FieldMap FIELDS[] = {
     { "LatOverride",          "lat_override",          "" },
     { "LonOverride",          "lon_override",          "" },
     { "WeatherProvider",      "weather_provider",      "auto" },
-    { "NWSUserAgent",         "nws_user_agent",        "WeatherACAP/2.0 (admin@example.com)" },
+    { "NWSUserAgent",         "nws_user_agent",
+      "WeatherACAP/" WEATHER_ACAP_VERSION " (admin@example.com)" },
     { "PollInterval",         "poll_interval",         "300" },
+    /* Must match params.c DEFAULTS exactly — the CGI used to carry a
+     * 3-rule version here, so any path that fell back to defaults silently
+     * dropped the other 12 rules. */
     { "AlertMap",             "alert_map",
-      "Tornado Warning:20:1|Severe Thunderstorm Warning:21:1|Flash Flood Warning:22:1" },
+      "Tornado Warning:20:1"
+      "|Severe Thunderstorm Warning:21:1"
+      "|Flash Flood Warning:22:1"
+      "|Tornado Watch:23:0"
+      "|Severe Thunderstorm Watch:24:0"
+      "|Flash Flood Watch:25:0"
+      "|Flood Warning:26:0"
+      "|Winter Storm Warning:27:0"
+      "|Blizzard Warning:28:0"
+      "|Ice Storm Warning:29:0"
+      "|High Wind Warning:30:0"
+      "|Hurricane Warning:31:0"
+      "|Tropical Storm Warning:32:0"
+      "|Extreme Heat Warning:33:0"
+      "|Red Flag Warning:34:0" },
     { "OverlayEnabled",       "overlay_enabled",       "yes" },
     { "OverlayPosition",      "overlay_position",      "topLeft" },
     { "OverlayTemplate",      "overlay_template",
@@ -168,6 +188,169 @@ static const FieldMap FIELDS[] = {
     { "AudioClipWatch",       "audio_clip_watch",        "-1"      },
     { NULL, NULL, NULL }
 };
+
+/* ── Secrets ─────────────────────────────────────────────────────────────
+ * Params that are never echoed to the browser.  The UI sends "__SET__" to
+ * mean "leave unchanged".  D4200Pass was missing from this list: it was
+ * returned in plaintext and, worse, the literal string __SET__ was stored
+ * as the password on every Hardware-tab save. */
+static int is_secret(const char *param) {
+    return strcmp(param, "VapixPass") == 0 ||
+           strcmp(param, "MqttPass")  == 0 ||
+           strcmp(param, "EmailPass") == 0 ||
+           strcmp(param, "D4200Pass") == 0;
+}
+
+/* ── Server-side numeric validation ──────────────────────────────────────
+ * The HTML min/max attributes are decorative (saves never call
+ * checkValidity) and the daemon atoi()s these.  LightningPollMult=0 was a
+ * SIGFPE crash loop; clamp here so the stored value is always sane. */
+typedef struct { const char *param; long min, max; } NumRange;
+static const NumRange NUM_RANGES[] = {
+    { "PollInterval",         60,   86400 },
+    { "OverlayMaxAlerts",      1,      10 },
+    { "SnapshotMaxCount",      0,    9999 },
+    { "AlertCooldownMin",      0,    1440 },
+    { "ThresholdCooldownMin",  0,    1440 },
+    { "LightningPort",         1,      64 },
+    { "LightningMinRisk",      1,       6 },
+    { "LightningPollMult",     1,     720 },
+    { "DisplayAlertDuration",  1,   86400 },
+    { "StrobeAlertDuration",   1,   86400 },
+    { "AudioClipWarning",     -1,   99999 },
+    { "AudioClipWatch",       -1,   99999 },
+    { NULL, 0, 0 }
+};
+
+/* Returns the value to store: the input if it is an in-range integer, the
+ * clamped value (written to buf) if out of range, or the compiled default
+ * if it is not a number at all.  *changed is set when the value differs. */
+static const char *sanitize_numeric(const char *param, const char *value,
+                                    char *buf, size_t buflen, int *changed) {
+    *changed = 0;
+    for (int i = 0; NUM_RANGES[i].param; i++) {
+        if (strcmp(NUM_RANGES[i].param, param) != 0) continue;
+        char *end = NULL;
+        long v = strtol(value ? value : "", &end, 10);
+        if (!value || !*value || !end || *end != '\0') {
+            for (int m = 0; FIELDS[m].param; m++)
+                if (strcmp(FIELDS[m].param, param) == 0) {
+                    *changed = 1;
+                    return FIELDS[m].defval;
+                }
+            return value;
+        }
+        if (v < NUM_RANGES[i].min) v = NUM_RANGES[i].min;
+        if (v > NUM_RANGES[i].max) v = NUM_RANGES[i].max;
+        snprintf(buf, buflen, "%ld", v);
+        *changed = strcmp(buf, value) != 0;
+        return buf;
+    }
+    return value;
+}
+
+/* ── MultiCamList password masking ───────────────────────────────────────
+ * Records are host[:PORT]:user:pass:label (see multicam.h).  config/export
+ * replace each non-empty password with __SET__; save/import substitute the
+ * stored password back for records whose host+user match.  Passwords were
+ * previously echoed in plaintext and rendered into the DOM. */
+typedef struct { char host[192]; char user[64]; char pass[64]; char label[64]; } McRec;
+
+static int mc_parse_rec(const char *rec, McRec *out) {
+    memset(out, 0, sizeof(*out));
+    char copy[512];
+    snprintf(copy, sizeof(copy), "%s", rec);
+    char *f[5] = { NULL, NULL, NULL, NULL, NULL };
+    int nf = 0;
+    char *p = copy;
+    for (int i = 0; i < 5 && p; i++) {
+        f[i] = p; nf++;
+        if (i < 4) {
+            char *c = strchr(p, ':');
+            if (c) { *c = '\0'; p = c + 1; } else p = NULL;
+        }
+    }
+    if (!f[0] || !*f[0]) return 0;
+
+    int has_port = 0;
+    if (nf >= 5 && f[1] && *f[1]) {
+        has_port = 1;
+        for (const char *q = f[1]; *q; q++)
+            if (*q < '0' || *q > '9') { has_port = 0; break; }
+    }
+    if (has_port) {
+        snprintf(out->host,  sizeof(out->host),  "%.180s:%.10s", f[0], f[1]);
+        snprintf(out->user,  sizeof(out->user),  "%s", f[2] ? f[2] : "root");
+        snprintf(out->pass,  sizeof(out->pass),  "%s", f[3] ? f[3] : "");
+        snprintf(out->label, sizeof(out->label), "%s", f[4] ? f[4] : "");
+    } else {
+        if (f[4]) f[4][-1] = ':';   /* label contained ':' — rejoin */
+        snprintf(out->host,  sizeof(out->host),  "%.191s", f[0]);
+        snprintf(out->user,  sizeof(out->user),  "%s", f[1] ? f[1] : "root");
+        snprintf(out->pass,  sizeof(out->pass),  "%s", f[2] ? f[2] : "");
+        snprintf(out->label, sizeof(out->label), "%s", f[3] ? f[3] : "");
+    }
+    return 1;
+}
+
+static void mc_append_rec(char *out, size_t outlen, const McRec *r, const char *pass) {
+    size_t cur = strlen(out);
+    if (cur >= outlen) return;
+    snprintf(out + cur, outlen - cur, "%s%s:%s:%s:%s",
+             cur ? "|" : "", r->host, r->user, pass, r->label);
+}
+
+static void mc_mask(const char *list, char *out, size_t outlen) {
+    out[0] = '\0';
+    if (!list || !*list) return;
+    char *copy = strdup(list);
+    if (!copy) return;
+    char *save = NULL;
+    for (char *rec = strtok_r(copy, "|", &save); rec; rec = strtok_r(NULL, "|", &save)) {
+        McRec r;
+        if (!mc_parse_rec(rec, &r)) continue;
+        mc_append_rec(out, outlen, &r, r.pass[0] ? "__SET__" : "");
+    }
+    free(copy);
+}
+
+static void mc_unmask(const char *incoming, const char *stored, char *out, size_t outlen) {
+    out[0] = '\0';
+    if (!incoming || !*incoming) return;
+
+    McRec st[MULTICAM_MAX_CAMS];
+    int   nst = 0;
+    if (stored && *stored) {
+        char *sc = strdup(stored);
+        if (sc) {
+            char *save = NULL;
+            for (char *rec = strtok_r(sc, "|", &save);
+                 rec && nst < MULTICAM_MAX_CAMS;
+                 rec = strtok_r(NULL, "|", &save))
+                if (mc_parse_rec(rec, &st[nst])) nst++;
+            free(sc);
+        }
+    }
+
+    char *ic = strdup(incoming);
+    if (!ic) return;
+    char *save = NULL;
+    for (char *rec = strtok_r(ic, "|", &save); rec; rec = strtok_r(NULL, "|", &save)) {
+        McRec r;
+        if (!mc_parse_rec(rec, &r)) continue;
+        const char *pass = r.pass;
+        if (strcmp(r.pass, "__SET__") == 0) {
+            pass = "";
+            for (int i = 0; i < nst; i++)
+                if (strcmp(st[i].host, r.host) == 0 && strcmp(st[i].user, r.user) == 0) {
+                    pass = st[i].pass;
+                    break;
+                }
+        }
+        mc_append_rec(out, outlen, &r, pass);
+    }
+    free(ic);
+}
 
 /* ── URL-decode / form parse ─────────────────────────────────────────────── */
 
@@ -290,7 +473,8 @@ static char *read_file_tail(const char *path, int max_lines) {
 /* ── File-based config access ─────────────────────────────────────────── */
 /* Replaces axparameter: daemon writes CONFIG_FILE, CGI reads it.          */
 
-static cJSON *g_config = NULL;   /* reloaded at the top of each request */
+static cJSON *g_config    = NULL;   /* reloaded at the top of each request */
+static int    g_config_ok = 0;      /* CONFIG_FILE was present and parsed */
 
 static void config_load(void) {
     if (g_config) { cJSON_Delete(g_config); g_config = NULL; }
@@ -299,8 +483,11 @@ static void config_load(void) {
         g_config = cJSON_Parse(raw);
         free(raw);
     }
-    /* g_config may be NULL if daemon hasn't written yet — cfg_get()
-     * handles this by falling back to compiled defaults. */
+    g_config_ok = (g_config != NULL);
+    /* g_config may be NULL if the daemon hasn't written yet — cfg_get()
+     * falls back to compiled defaults for READS, but every WRITE path
+     * refuses: merging one section's form fields over compiled defaults
+     * and handing that to the daemon used to reset every other setting. */
 }
 
 /* Get a config value.  Returns heap string; caller frees.
@@ -323,25 +510,32 @@ static int cfg_get_int(const char *param_name, int def) {
     return v;
 }
 
-/* Signal the daemon to pick up changes from SAVE_FILE. */
-static void signal_daemon(void) {
+/* Signal the daemon: SIGUSR1 = apply SAVE_FILE, SIGUSR2 = poll now. */
+static void signal_daemon_sig(int sig) {
     char *pidstr = read_file(PID_FILE);
     if (pidstr) {
         pid_t pid = (pid_t)atoi(pidstr);
-        if (pid > 1) kill(pid, SIGUSR1);
+        if (pid > 1) kill(pid, sig);
         free(pidstr);
     }
 }
+static void signal_daemon(void) { signal_daemon_sig(SIGUSR1); }
 
 /* Write a flat JSON object of {param: value} to `path`, atomically (via
  * temp+rename), with the given overrides applied on top of the current
- * config.  Keys/values are param names (not form names). */
+ * config.  Keys/values are param names (not form names).
+ *
+ * The temp name is process-specific: the daemon writes CONFIG_FILE too,
+ * and sharing one ".tmp" let the two writers truncate each other and
+ * rename garbage into place.  Created 0600 — it carries credentials. */
 static int write_overrides_to(const char *path,
                               const char *overrides[][2], int count) {
+    if (!g_config_ok) return 0;
     char tmp[256];
-    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    snprintf(tmp, sizeof(tmp), "%s.cgi.tmp", path);
     FILE *f = fopen(tmp, "w");
     if (!f) return 0;
+    fchmod(fileno(f), 0600);
     fprintf(f, "{\n");
 
     int first = 1;
@@ -400,18 +594,21 @@ static void endpoint_config(void) {
     out_puts("{\n");
     for (int i = 0; FIELDS[i].param; i++) {
         char *v = cfg_get(FIELDS[i].param);
-        int is_secret = (strcmp(FIELDS[i].param, "VapixPass")  == 0 ||
-                         strcmp(FIELDS[i].param, "MqttPass")   == 0 ||
-                         strcmp(FIELDS[i].param, "EmailPass")  == 0);
         out_printf("  \"%s\": \"", FIELDS[i].form);
-        if (is_secret) {
+        if (is_secret(FIELDS[i].param)) {
             if (v && *v) out_puts("__SET__");
+        } else if (strcmp(FIELDS[i].param, "MultiCamList") == 0) {
+            char masked[4096];
+            mc_mask(v, masked, sizeof(masked));
+            json_esc_out(masked);
         } else {
             json_esc_out(v);
         }
-        out_printf("\"%s\n", FIELDS[i + 1].param ? "," : "");
+        out_puts("\",\n");
         free(v);
     }
+    out_printf("  \"app_version\": \"%s\",\n", WEATHER_ACAP_VERSION);
+    out_printf("  \"config_ok\": %s\n", g_config_ok ? "true" : "false");
     out_puts("}\n");
 }
 
@@ -420,20 +617,70 @@ static void endpoint_status(void) {
     char *status = read_file(STATUS_FILE);
     char *hb     = read_file(HEARTBEAT_FILE);
     long  hb_ts  = hb ? atol(hb) : 0;
+    /* The daemon writes this atomically now, but still guard: an empty or
+     * unparseable body would make the whole response invalid JSON and the
+     * dashboard would silently skip the tick. */
+    int valid = 0;
+    if (status && *status) {
+        cJSON *t = cJSON_Parse(status);
+        if (t) { valid = 1; cJSON_Delete(t); }
+    }
     out_printf("{\n  \"snapshot\": %s,\n  \"last_heartbeat\": %ld\n}\n",
-               status ? status : "{}", hb_ts);
+               valid ? status : "{}", hb_ts);
     free(status);
     free(hb);
 }
 
+#define MAX_OVERRIDES 128
+
+/* Map one incoming (form-name, value) pair to an override entry, applying
+ * the secret sentinel, numeric clamping and MultiCamList unmasking.
+ * Returns 1 if an override was added. */
+static int add_override(const char *param_name, const char *value,
+                        const char *overrides[][2], int *ov_count,
+                        char num_buf[][32], int *n_num, char *mc_buf, size_t mc_len,
+                        int *clamped) {
+    if (*ov_count >= MAX_OVERRIDES) return 0;
+    if (is_secret(param_name) && strcmp(value, "__SET__") == 0) return 0;
+
+    const char *val = value;
+    if (*n_num < 16) {
+        int changed = 0;
+        const char *sv = sanitize_numeric(param_name, val,
+                                          num_buf[*n_num], 32, &changed);
+        if (sv == num_buf[*n_num]) (*n_num)++;
+        val = sv;
+        if (changed) (*clamped)++;
+    }
+    if (strcmp(param_name, "MultiCamList") == 0) {
+        char *stored = cfg_get("MultiCamList");
+        mc_unmask(val, stored, mc_buf, mc_len);
+        free(stored);
+        val = mc_buf;
+    }
+    overrides[*ov_count][0] = param_name;
+    overrides[*ov_count][1] = val;
+    (*ov_count)++;
+    return 1;
+}
+
 static void endpoint_save(const char *body) {
-    KV kv[64] = {0};
-    int n = parse_kv(body, kv, 64);
+    if (!g_config_ok) {
+        err_json("daemon config not available yet — wait a few seconds and retry");
+        return;
+    }
+
+    KV kv[MAX_OVERRIDES] = {0};
+    int n = parse_kv(body, kv, MAX_OVERRIDES);
+
+    static char num_buf[16][32];
+    static char mc_buf[4096];
+    int n_num = 0, clamped = 0;
 
     /* Build overrides array: map form names → param names */
-    const char *overrides[64][2];
+    const char *overrides[MAX_OVERRIDES][2];
     int ov_count = 0;
-    for (int i = 0; i < n && ov_count < 64; i++) {
+    for (int i = 0; i < n; i++) {
         const char *param_name = NULL;
         for (int m = 0; FIELDS[m].param; m++) {
             if (strcmp(kv[i].key, FIELDS[m].form) == 0) {
@@ -442,14 +689,8 @@ static void endpoint_save(const char *body) {
             }
         }
         if (!param_name) continue;
-        if ((strcmp(param_name, "VapixPass") == 0 ||
-             strcmp(param_name, "MqttPass")  == 0 ||
-             strcmp(param_name, "EmailPass") == 0)
-            && strcmp(kv[i].value, "__SET__") == 0) continue;
-
-        overrides[ov_count][0] = param_name;
-        overrides[ov_count][1] = kv[i].value;
-        ov_count++;
+        add_override(param_name, kv[i].value, overrides, &ov_count,
+                     num_buf, &n_num, mc_buf, sizeof(mc_buf), &clamped);
     }
 
     int ok = write_save_file(overrides, ov_count);
@@ -457,8 +698,9 @@ static void endpoint_save(const char *body) {
     free_kv(kv, n);
 
     json_header();
-    out_printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
-               ok ? "true" : "false", ov_count, ok ? 0 : 1);
+    out_printf("{\"ok\":%s,\"saved\":%d,\"clamped\":%d%s}\n",
+               ok ? "true" : "false", ov_count, clamped,
+               ok ? "" : ",\"error\":\"could not write save file\"");
 }
 
 static void endpoint_ports(void) {
@@ -482,38 +724,35 @@ static void endpoint_device(void) {
     free(info); free(u); free(p);
 }
 
-static void endpoint_history(void) {
-    json_header();
-    char *tail = read_file_tail(HISTORY_FILE, 50);
-    out_puts("{\"entries\":[");
-    if (tail && *tail) {
-        int first = 1;
-        char *line = strtok(tail, "\n");
-        while (line) {
-            if (*line) {
-                out_printf("%s%s", first ? "" : ",", line);
-                first = 0;
-            }
-            line = strtok(NULL, "\n");
-        }
+/* Emit each line of `text` that parses as JSON.  The daemon appends with
+ * a plain fopen("a"), so a read can catch a torn final line — one bad
+ * line used to invalidate the whole response. */
+static void emit_jsonl_lines(char *text, int *first) {
+    char *save = NULL;
+    for (char *line = strtok_r(text, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        if (!*line) continue;
+        cJSON *t = cJSON_Parse(line);
+        if (!t) continue;
+        cJSON_Delete(t);
+        out_printf("%s%s", *first ? "" : ",", line);
+        *first = 0;
     }
-    out_puts("]}\n");
-    free(tail);
 }
 
-static void endpoint_logs(void) {
+static void endpoint_history(void) {
     json_header();
-    char *log = NULL;
-    const char *paths[] = { "/var/log/messages", "/var/log/syslog",
-                            "/var/log/weather_acap.log", NULL };
-    for (int i = 0; paths[i] && !log; i++) {
-        if (access(paths[i], R_OK) == 0)
-            log = read_file_tail(paths[i], 60);
-    }
-    out_puts("{\"lines\":\"");
-    json_esc_out(log ? log : "(no accessible syslog; check camera System Log via web UI)");
-    out_puts("\"}\n");
-    free(log);
+    out_puts("{\"entries\":[");
+    int first = 1;
+    /* The rotated file first (older), then the current one, so the list
+     * doesn't collapse to a single entry right after a rotation. */
+    char *older = read_file_tail(HISTORY_FILE ".1", 50);
+    char *cur   = read_file_tail(HISTORY_FILE, 50);
+    if (older) emit_jsonl_lines(older, &first);
+    if (cur)   emit_jsonl_lines(cur,   &first);
+    out_puts("]}\n");
+    free(older);
+    free(cur);
 }
 
 static void endpoint_preview_overlay(void) {
@@ -780,7 +1019,7 @@ static void endpoint_snapshot_list(void) {
             if (flen < 5 || strcmp(fname + flen - 4, ".jpg") != 0) continue;
 
             char path[512];
-            snprintf(path, sizeof(path), "%s/%s", dir, fname);
+            snprintf(path, sizeof(path), "%.255s/%.255s", dir, fname);
             struct stat st;
             if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
 
@@ -871,6 +1110,7 @@ static void endpoint_test_snapshot(void) {
         .save_dir    = dir_cfg,
         .on_activate = 1,
         .on_clear    = 0,
+        .max_count   = cfg_get_int("SnapshotMaxCount", 50),
     };
 
     char saved[512] = "";
@@ -926,6 +1166,7 @@ static void endpoint_capture_now(void) {
         .save_dir    = dir_cfg,
         .on_activate = 1,
         .on_clear    = 0,
+        .max_count   = cfg_get_int("SnapshotMaxCount", 50),   /* was 0: never pruned */
     };
 
     char saved[512] = "";
@@ -943,14 +1184,20 @@ static void endpoint_capture_now(void) {
 static void endpoint_export(void) {
     out_puts("Content-Type: application/json\r\n"
              "Content-Disposition: attachment; filename=\"weather_acap_config.json\"\r\n\r\n");
-    out_puts("{\n  \"app\": \"weather_acap\",\n  \"version\": 1,\n  \"config\": {\n");
+    out_printf("{\n  \"app\": \"weather_acap\",\n  \"version\": 1,\n"
+               "  \"app_version\": \"%s\",\n  \"config\": {\n", WEATHER_ACAP_VERSION);
     for (int i = 0; FIELDS[i].param; i++) {
         char *v = cfg_get(FIELDS[i].param);
-        int is_secret = (strcmp(FIELDS[i].param, "VapixPass")  == 0 ||
-                         strcmp(FIELDS[i].param, "MqttPass")   == 0 ||
-                         strcmp(FIELDS[i].param, "EmailPass")  == 0);
         out_printf("    \"%s\": \"", FIELDS[i].param);
-        if (!is_secret) json_esc_out(v);
+        if (is_secret(FIELDS[i].param)) {
+            /* blank — passwords are never exported */
+        } else if (strcmp(FIELDS[i].param, "MultiCamList") == 0) {
+            char masked[4096];
+            mc_mask(v, masked, sizeof(masked));
+            json_esc_out(masked);
+        } else {
+            json_esc_out(v);
+        }
         out_printf("\"%s\n", FIELDS[i + 1].param ? "," : "");
         free(v);
     }
@@ -958,25 +1205,31 @@ static void endpoint_export(void) {
 }
 
 static void endpoint_import(const char *body) {
+    if (!g_config_ok) {
+        err_json("daemon config not available yet — wait a few seconds and retry");
+        return;
+    }
     if (!body || !*body) { err_json("empty body"); return; }
     cJSON *root = cJSON_Parse(body);
     if (!root) { err_json("invalid JSON"); return; }
     cJSON *cfg = cJSON_GetObjectItem(root, "config");
     if (!cfg) { cJSON_Delete(root); err_json("missing config object"); return; }
 
-    /* Build overrides from imported JSON */
-    const char *overrides[64][2];
+    static char num_buf[16][32];
+    static char mc_buf[4096];
+    int n_num = 0, clamped = 0;
+
+    /* Build overrides from imported JSON — 68 fields no longer fit the old
+     * 64-slot array, so the last ones were silently dropped. */
+    const char *overrides[MAX_OVERRIDES][2];
     int ov_count = 0;
-    for (int i = 0; FIELDS[i].param && ov_count < 64; i++) {
+    for (int i = 0; FIELDS[i].param; i++) {
         cJSON *v = cJSON_GetObjectItem(cfg, FIELDS[i].param);
-        if (!cJSON_IsString(v)) continue;
-        if ((strcmp(FIELDS[i].param, "VapixPass") == 0 ||
-             strcmp(FIELDS[i].param, "MqttPass")  == 0 ||
-             strcmp(FIELDS[i].param, "EmailPass") == 0)
-            && !*v->valuestring) continue;
-        overrides[ov_count][0] = FIELDS[i].param;
-        overrides[ov_count][1] = v->valuestring;
-        ov_count++;
+        if (!cJSON_IsString(v) || !v->valuestring) continue;
+        /* Exports carry blank secrets — keep whatever this device has. */
+        if (is_secret(FIELDS[i].param) && !*v->valuestring) continue;
+        add_override(FIELDS[i].param, v->valuestring, overrides, &ov_count,
+                     num_buf, &n_num, mc_buf, sizeof(mc_buf), &clamped);
     }
 
     int ok = write_save_file(overrides, ov_count);
@@ -984,8 +1237,37 @@ static void endpoint_import(const char *body) {
     cJSON_Delete(root);
 
     json_header();
-    out_printf("{\"ok\":%s,\"saved\":%d,\"errors\":%d}\n",
-               ok ? "true" : "false", ov_count, ok ? 0 : 1);
+    out_printf("{\"ok\":%s,\"saved\":%d,\"clamped\":%d%s}\n",
+               ok ? "true" : "false", ov_count, clamped,
+               ok ? "" : ",\"error\":\"could not write save file\"");
+}
+
+/* ── Overlay maintenance / poll now ──────────────────────────────────────── */
+
+/* Remove every runtime text overlay on the camera — recovery for the
+ * "limit reached" state left by earlier versions that stacked one overlay
+ * per daemon restart.  The daemon is nudged to poll (and re-create its
+ * own overlay) immediately. */
+static void endpoint_overlay_purge(void) {
+    char *u = cfg_get("VapixUser");
+    char *p = cfg_get("VapixPass");
+    int n = overlay_purge_all(u, p);
+    free(u); free(p);
+    json_header();
+    if (n < 0) {
+        out_puts("{\"ok\":false,\"error\":\"overlay list call failed — check VAPIX credentials on the Advanced tab\"}\n");
+        return;
+    }
+    signal_daemon_sig(SIGUSR2);
+    out_printf("{\"ok\":true,\"removed\":%d,"
+               "\"msg\":\"Removed %d text overlay(s); the daemon is re-creating its own now\"}\n",
+               n, n);
+}
+
+static void endpoint_poll_now(void) {
+    signal_daemon_sig(SIGUSR2);
+    json_header();
+    out_puts("{\"ok\":true,\"msg\":\"Poll requested\"}\n");
 }
 
 /* ── Sprint 3 notification test endpoints ──────────────────────────────── */
@@ -1069,44 +1351,6 @@ static void endpoint_test_email(void) {
     json_header();
     out_printf("{\"ok\":%s}\n", rc == 0 ? "true" : "false");
 }
-
-/* ── Sprint 5: threshold list ───────────────────────────────────────────── */
-
-/* Return the parsed threshold rules as a JSON array so the UI can render
- * the threshold table without having to parse the wire format itself. */
-static void endpoint_threshold_list(void) {
-    char *mapstr = cfg_get("ThresholdMap");
-
-    ThresholdMap tmap;
-    threshold_map_parse(mapstr, &tmap);
-    free(mapstr);
-
-    static const char *cond_names[] = {
-        "TempF", "WindMph", "HumidityPct", "WindDirDeg", "Unknown"
-    };
-    static const char *op_names[] = {
-        ">", "<", ">=", "<=", "?"
-    };
-
-    json_header();
-    out_puts("{\"ok\":true,\"rules\":[\n");
-    for (int i = 0; i < tmap.count; i++) {
-        const ThresholdRule *r = &tmap.rules[i];
-        int ci = (int)r->condition;
-        int oi = (int)r->op;
-        if (ci < 0 || ci > 4) ci = 4;
-        if (oi < 0 || oi > 4) oi = 4;
-        out_printf("  {\"condition\":\"%s\",\"op\":\"%s\",\"value\":%.4g,"
-                   "\"port\":%d,\"enabled\":%s,\"label\":\"",
-                   cond_names[ci], op_names[oi], r->value,
-                   r->port, r->enabled ? "true" : "false");
-        json_esc_out(r->label);
-        out_printf("\"}%s\n", (i + 1 < tmap.count) ? "," : "");
-    }
-    out_puts("]}\n");
-}
-
-/* ── Dispatcher ────────────────────────────────────────────────────────── */
 
 /* ── Sprint 6: conditions history ──────────────────────────────────────── */
 
@@ -1246,7 +1490,7 @@ static AlertOutputConfig build_test_alertout_cfg(void) {
 
     /* Static storage for credentials — these live for the duration of the
      * endpoint call, which is synchronous, so the pointers stay valid. */
-    static char s_vuser[64], s_vpass[64];
+    static char s_vuser[256], s_vpass[256];
     snprintf(s_vuser, sizeof(s_vuser), "%s", vuser ? vuser : "root");
     snprintf(s_vpass, sizeof(s_vpass), "%s", vpass ? vpass : "");
     cfg.vapix_user = s_vuser;
@@ -1322,7 +1566,7 @@ static void endpoint_clip_list(void) {
         /* clip[N].name=STRING  — %[^\r\n] captures spaces in the name */
         } else if (sscanf(line, "clip[%d].name=%127[^\r\n]", &n, name_buf) == 2
                 && n >= 1 && n <= AO_MAX_CLIPS) {
-            strncpy(clips[n - 1].name, name_buf, 127);
+            snprintf(clips[n - 1].name, sizeof(clips[n - 1].name), "%s", name_buf);
             clips[n - 1].name[127]  = '\0';
             clips[n - 1].have_name  = 1;
             if (n > max_n) max_n = n;
@@ -1482,8 +1726,9 @@ static void handle_request(void) {
     else if (strcmp(action, "ports") == 0)        endpoint_ports();
     else if (strcmp(action, "device") == 0)       endpoint_device();
     else if (strcmp(action, "history") == 0)      endpoint_history();
-    else if (strcmp(action, "logs") == 0)         endpoint_logs();
     else if (strcmp(action, "preview_overlay") == 0) endpoint_preview_overlay();
+    else if (strcmp(action, "overlay_purge") == 0 && is_post) endpoint_overlay_purge();
+    else if (strcmp(action, "poll_now") == 0 && is_post)      endpoint_poll_now();
     else if (strcmp(action, "test_weather") == 0) endpoint_test_weather();
     else if (strcmp(action, "test_vapix") == 0)   endpoint_test_vapix();
     else if (strcmp(action, "fire_port") == 0 && is_post)   endpoint_fire_port(qs, 1);
@@ -1503,7 +1748,6 @@ static void handle_request(void) {
     else if (strcmp(action, "capture_now")   == 0 && is_post) endpoint_capture_now();
     else if (strcmp(action, "test_mqtt")  == 0 && is_post) endpoint_test_mqtt();
     else if (strcmp(action, "test_email") == 0 && is_post) endpoint_test_email();
-    else if (strcmp(action, "threshold_list") == 0) endpoint_threshold_list();
     else if (strcmp(action, "cond_history")  == 0) endpoint_cond_history();
     else if (strcmp(action, "test_multicam_snap") == 0 && is_post) {
         char *body = read_post_body();
@@ -1538,7 +1782,8 @@ int main(void) {
         closelog();
         return 1;
     }
-    syslog(LOG_INFO, "FastCGI starting, socket=%s uid=%d", socket_path, (int)getuid());
+    syslog(LOG_INFO, "FastCGI starting (version %s), socket=%s uid=%d",
+           WEATHER_ACAP_VERSION, socket_path, (int)getuid());
 
     if (FCGX_Init() != 0) {
         syslog(LOG_ERR, "FCGX_Init failed");

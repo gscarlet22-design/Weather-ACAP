@@ -8,9 +8,11 @@
  *
  * Camera list format (MultiCamList parameter):
  *   "host:user:pass:label|host:user:pass:label|..."
- *   host  — IP address or hostname (optionally :port, e.g. 192.168.1.10:8080)
+ *   or, with a non-default port:
+ *   "host:PORT:user:pass:label|..."        (PORT must be all digits)
+ *   host  — IP address or hostname
  *   user  — VAPIX username
- *   pass  — VAPIX password
+ *   pass  — VAPIX password — must not contain ':' or '|'
  *   label — human-readable name used in the filename; defaults to the host
  *
  * Filename format: YYYYMMDD_HHMMSS_<label>_<event_type>.jpg

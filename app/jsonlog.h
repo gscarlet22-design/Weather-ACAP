@@ -26,6 +26,7 @@ void jsonlog_init(int enabled, const char *app_name);
  * Drop-in replacement for syslog().
  * Always calls vsyslog(); also writes a JSON line to stderr when enabled.
  */
-void jlog(int priority, const char *fmt, ...);
+void jlog(int priority, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
 
 #endif /* JSONLOG_H */

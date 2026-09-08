@@ -18,6 +18,7 @@
 
 #include "params.h"
 #include "cJSON.h"
+#include "version.h"
 
 #include <glib.h>
 #include <stdio.h>
@@ -45,7 +46,7 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
 
     /* Weather provider */
     { "WeatherProvider", "auto" },
-    { "NWSUserAgent",    "WeatherACAP/2.0 (admin@example.com)" },
+    { "NWSUserAgent",    "WeatherACAP/" WEATHER_ACAP_VERSION " (admin@example.com)" },
     { "PollInterval",    "300" },
 
     /* Alert → port map: "Type:Port:Enabled|Type:Port:Enabled|..." */
@@ -63,7 +64,7 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
       "|High Wind Warning:30:0"
       "|Hurricane Warning:31:0"
       "|Tropical Storm Warning:32:0"
-      "|Excessive Heat Warning:33:0"
+      "|Extreme Heat Warning:33:0"
       "|Red Flag Warning:34:0" },
 
     /* Overlay */
@@ -351,6 +352,31 @@ char *params_get(const char *name) {
     return strdup(compiled_default(name));
 }
 
+gboolean params_flush(GError **error) {
+    if (!g_inited) {
+        if (error)
+            *error = g_error_new(G_FILE_ERROR, G_FILE_ERROR_FAILED,
+                                 "params store not initialized");
+        return FALSE;
+    }
+    if (store_persist() != 0) {
+        syslog(LOG_WARNING, "params_flush: persist failed");
+        if (error)
+            *error = g_error_new(G_FILE_ERROR, G_FILE_ERROR_FAILED,
+                                 "could not write %s", PARAMS_FILE);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+void params_set_deferred(const char *name, const char *value) {
+    if (!g_inited) {
+        syslog(LOG_WARNING, "params_set_deferred(%s): store not initialized", name);
+        return;
+    }
+    set_slot(name, value);
+}
+
 gboolean params_set(const char *name, const char *value, GError **error) {
     if (!g_inited) {
         syslog(LOG_WARNING, "params_set(%s): store not initialized", name);
@@ -360,14 +386,7 @@ gboolean params_set(const char *name, const char *value, GError **error) {
         return FALSE;
     }
     set_slot(name, value);
-    if (store_persist() != 0) {
-        syslog(LOG_WARNING, "params_set(%s): persist failed", name);
-        if (error)
-            *error = g_error_new(G_FILE_ERROR, G_FILE_ERROR_FAILED,
-                                 "could not write %s", PARAMS_FILE);
-        return FALSE;
-    }
-    return TRUE;
+    return params_flush(error);
 }
 
 int params_get_int(const char *name, int default_val) {

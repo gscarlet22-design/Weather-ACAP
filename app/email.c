@@ -63,24 +63,41 @@ static void rfc2822_date(char *out, size_t outlen)
              t->tm_hour, t->tm_min, t->tm_sec);
 }
 
+/* Copy src to dst replacing CR/LF with spaces.  Anything that lands in a
+ * header line (From/To/Subject) must not be able to terminate the header
+ * block or inject headers — threshold labels are user-typed. */
+static void header_safe(const char *src, char *dst, size_t dstlen)
+{
+    size_t j = 0;
+    if (!src) src = "";
+    for (; *src && j + 1 < dstlen; src++)
+        dst[j++] = (*src == '\r' || *src == '\n') ? ' ' : *src;
+    dst[j] = '\0';
+}
+
 /* ── Build RFC 2822 message ───────────────────────────────────────────── */
 static char *build_message(const EmailConfig *cfg,
                             const char *event_type,
                             const char *alert_event,
                             const WeatherSnapshot *snap)
 {
-    /* Subject line */
+    if (!event_type) event_type = "";
+
+    /* Subject line — ASCII only (no RFC 2047 encoding is done) */
+    char safe_evt[192];
+    header_safe(alert_event ? alert_event : "Unknown", safe_evt, sizeof(safe_evt));
+
     char subject[256];
     if (strcmp(event_type, "alert_activated") == 0)
-        snprintf(subject, sizeof(subject),
-                 "Weather Alert Active: %s",
-                 alert_event ? alert_event : "Unknown");
+        snprintf(subject, sizeof(subject), "Weather Alert Active: %s", safe_evt);
     else if (strcmp(event_type, "alert_cleared") == 0)
-        snprintf(subject, sizeof(subject),
-                 "Weather Alert Cleared: %s",
-                 alert_event ? alert_event : "Unknown");
+        snprintf(subject, sizeof(subject), "Weather Alert Cleared: %s", safe_evt);
     else
-        snprintf(subject, sizeof(subject), "Weather ACAP \xe2\x80\x94 Test Email");
+        snprintf(subject, sizeof(subject), "Weather ACAP - Test Email");
+
+    char safe_from[256], safe_to[1024];
+    header_safe(cfg->from, safe_from, sizeof(safe_from));
+    header_safe(cfg->to,   safe_to,   sizeof(safe_to));
 
     /* Body text */
     char body[1024];
@@ -127,11 +144,16 @@ static char *build_message(const EmailConfig *cfg,
 
     /* Assemble full RFC 2822 message.
      * Lines MUST be terminated with CRLF.
-     * A blank line separates headers from body. */
-    size_t msgsz = 512 + strlen(subject) + strlen(body);
+     * A blank line separates headers from body.
+     * Size the buffer for every variable part — From/To were previously
+     * left out, so a long recipient list silently truncated the body. */
+    size_t msgsz = 512 + strlen(subject) + strlen(body)
+                 + strlen(safe_from) + strlen(safe_to);
     char  *msg   = (char *)malloc(msgsz);
     if (!msg) return NULL;
 
+    /* Body carries UTF-8 (°F); declare 8bit so 8BITMIME relays don't
+     * reject or mangle it. */
     snprintf(msg, msgsz,
         "Date: %s\r\n"
         "From: %s\r\n"
@@ -139,14 +161,10 @@ static char *build_message(const EmailConfig *cfg,
         "Subject: %s\r\n"
         "MIME-Version: 1.0\r\n"
         "Content-Type: text/plain; charset=UTF-8\r\n"
-        "Content-Transfer-Encoding: 7bit\r\n"
+        "Content-Transfer-Encoding: 8bit\r\n"
         "\r\n"
         "%s",
-        date,
-        cfg->from ? cfg->from : "",
-        cfg->to   ? cfg->to   : "",
-        subject,
-        body);
+        date, safe_from, safe_to, subject, body);
 
     return msg;
 }
@@ -191,6 +209,7 @@ int email_send(const EmailConfig *cfg,
     struct curl_slist *rcpts = NULL;
     {
         char *to_copy = strdup(cfg->to);
+        if (!to_copy) { curl_easy_cleanup(curl); free(msg); return -1; }
         char *save    = NULL;
         char *tok     = strtok_r(to_copy, ",", &save);
         while (tok) {
@@ -230,14 +249,27 @@ int email_send(const EmailConfig *cfg,
     curl_easy_setopt(curl, CURLOPT_MAIL_RCPT,     rcpts);
     curl_easy_setopt(curl, CURLOPT_READFUNCTION,  read_cb);
     curl_easy_setopt(curl, CURLOPT_READDATA,      &reader);
-    curl_easy_setopt(curl, CURLOPT_UPLOAD,        1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       20L);
-    /* Opportunistic STARTTLS on plain smtp:// connections */
-    curl_easy_setopt(curl, CURLOPT_USE_SSL,       (long)CURLUSESSL_TRY);
-    /* Don't verify server cert for internal/private SMTP relays */
+    curl_easy_setopt(curl, CURLOPT_UPLOAD,         1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        20L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
+    /* STARTTLS on plain smtp://.  When credentials are configured TLS is
+     * REQUIRED — "try" would silently downgrade to plaintext if STARTTLS
+     * were stripped and send the password in the clear.  Without
+     * credentials (internal unauthenticated relay) stay opportunistic. */
+    int have_creds = cfg->username && *cfg->username;
+    curl_easy_setopt(curl, CURLOPT_USE_SSL,
+                     (long)(have_creds ? CURLUSESSL_ALL : CURLUSESSL_TRY));
+    /* Certificate verification stays off to keep self-signed internal
+     * relays working — see README "Email" for the trade-off. */
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  discard_cb);
+#ifdef CURLOPT_PROTOCOLS_STR
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR,  "smtp,smtps");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)(CURLPROTO_SMTP | CURLPROTO_SMTPS));
+#endif
 
     CURLcode rc = curl_easy_perform(curl);
 

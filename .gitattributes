@@ -1,0 +1,9 @@
+# Normalise line endings: the Makefile and shell fragments must be LF for the
+# SDK container; Windows checkouts with core.autocrlf=true were writing CRLF.
+* text=auto
+Makefile text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.eap binary

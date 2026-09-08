@@ -21,4 +21,10 @@ WORKDIR /opt/app
 
 # Source the SDK cross-compilation environment and run acap-build.
 # The glob matches exactly one environment-setup-* file per architecture.
-RUN . /opt/axis/acapsdk/environment-setup-* && acap-build .
+# Stamp the target architecture into the manifest (the field is hard-coded to
+# aarch64 in the repo; CI does the same with jq).  -a weather_acap.cgi is
+# REQUIRED: acap-build only packages the appName binary by default and
+# silently omits the FastCGI backend, leaving the web UI at HTTP 500.
+RUN sed -i "s/\"architecture\": *\"[a-z0-9]*\"/\"architecture\": \"${ARCH}\"/" manifest.json \
+ && . /opt/axis/acapsdk/environment-setup-* \
+ && acap-build . -a weather_acap.cgi

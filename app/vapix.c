@@ -1,11 +1,34 @@
 #include "vapix.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
 #include <unistd.h>
+
+/* ── Input validation ────────────────────────────────────────────────── */
+
+int vapix_valid_host(const char *host) {
+    if (!host || !*host) return 0;
+    if (strlen(host) > 253) return 0;
+    for (const char *p = host; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (!(isalnum(c) || c == '.' || c == '-' || c == ':' || c == '[' || c == ']'))
+            return 0;
+    }
+    return 1;
+}
+
+int vapix_valid_resolution(const char *res) {
+    if (!res || !*res || strlen(res) > 11) return 0;
+    const char *x = strchr(res, 'x');
+    if (!x || x == res || !x[1]) return 0;
+    for (const char *p = res; p < x; p++) if (!isdigit((unsigned char)*p)) return 0;
+    for (const char *p = x + 1; *p; p++)  if (!isdigit((unsigned char)*p)) return 0;
+    return 1;
+}
 
 #ifndef CGI_NO_CURL
 #include <curl/curl.h>
@@ -24,15 +47,30 @@ static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     return n;
 }
 
+static size_t discard_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
+    (void)ptr; (void)ud;
+    return sz * nmemb;
+}
+
 /* Binary-safe write-to-file callback for JPEG capture. */
 static size_t write_to_file_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     return fwrite(ptr, sz, nmemb, (FILE *)ud);
 }
 
-static void set_auth(CURL *curl, const char *user, const char *pass) {
-    static char userpwd[256];
-    snprintf(userpwd, sizeof(userpwd), "%s:%s",
-             user ? user : "", pass ? pass : "");
+/* Options every localhost/LAN call shares.
+ * NOSIGNAL: the daemon's GLib loop and the FastCGI runtime own signal
+ * handling; without it curl's SIGALRM-based timeout never fires and a
+ * stuck VAPIX endpoint blocks the caller indefinitely. */
+static void set_common(CURL *curl, long timeout_s) {
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        timeout_s);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
+}
+
+/* userpwd must outlive the setopt call only — curl copies string options. */
+static void set_auth(CURL *curl, char *userpwd, size_t len,
+                     const char *user, const char *pass) {
+    snprintf(userpwd, len, "%s:%s", user ? user : "", pass ? pass : "");
     curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_DIGEST);
     curl_easy_setopt(curl, CURLOPT_USERPWD,  userpwd);
 }
@@ -46,10 +84,11 @@ long vapix_port_set(int port, int activate, const char *user, const char *pass) 
 
     CURL *curl = curl_easy_init();
     if (!curl) return 0;
-    set_auth(curl, user, pass);
-    curl_easy_setopt(curl, CURLOPT_URL,     url);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-    curl_easy_setopt(curl, CURLOPT_NOBODY,  1L);
+    char userpwd[256];
+    set_auth(curl, userpwd, sizeof(userpwd), user, pass);
+    curl_easy_setopt(curl, CURLOPT_URL,           url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discard_cb);   /* plain GET, not HEAD */
+    set_common(curl, 5L);
 
     CURLcode rc = curl_easy_perform(curl);
     long http_code = 0;
@@ -73,15 +112,12 @@ char *vapix_get(const char *path, const char *user, const char *pass,
     if (!curl) return NULL;
 
     Buf buf = { NULL, 0 };
-    set_auth(curl, user, pass);
-    curl_easy_setopt(curl, CURLOPT_URL,            url);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        10L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 4L);
-    /* NOSIGNAL: FastCGI owns signal handling; curl's SIGALRM-based timeout
-     * is unreliable here — use socket-level timeouts instead. */
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &buf);
+    char userpwd[256];
+    set_auth(curl, userpwd, sizeof(userpwd), user, pass);
+    curl_easy_setopt(curl, CURLOPT_URL,           url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &buf);
+    set_common(curl, 10L);
 
     CURLcode rc = curl_easy_perform(curl);
     long http_code = 0;
@@ -143,86 +179,27 @@ char *vapix_device_info(const char *user, const char *pass) {
     return NULL;
 }
 
-int vapix_snapshot_to_file(const char *path,
-                           const char *resolution,
-                           const char *user,
-                           const char *pass,
-                           long *http_code_out) {
-    char url[384];
-    if (resolution && *resolution)
-        snprintf(url, sizeof(url),
-                 "http://localhost/axis-cgi/jpg/image.cgi?camera=1&resolution=%s",
-                 resolution);
-    else
-        snprintf(url, sizeof(url),
-                 "http://localhost/axis-cgi/jpg/image.cgi?camera=1");
+/* Shared implementation for the local and remote snapshot entry points.
+ * `tag` is the syslog prefix ("vapix" / "multicam"). */
+static int snapshot_impl(const char *tag,
+                         const char *host,
+                         const char *path,
+                         const char *resolution,
+                         const char *user,
+                         const char *pass,
+                         long *http_code_out) {
+    if (http_code_out) *http_code_out = 0;
 
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        syslog(LOG_WARNING, "vapix: snapshot: fopen(%s): %s", path, strerror(errno));
+    if (!vapix_valid_host(host)) {
+        syslog(LOG_WARNING, "%s: snapshot: invalid host \"%s\"", tag, host ? host : "");
         return -1;
     }
-
-    CURL *curl = curl_easy_init();
-    if (!curl) { fclose(f); unlink(path); return -1; }
-
-    set_auth(curl, user, pass);
-    curl_easy_setopt(curl, CURLOPT_URL,           url);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       15L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_file_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     f);
-
-    CURLcode rc = curl_easy_perform(curl);
-
-    /* Read response metadata before freeing the curl handle */
-    char *ct = NULL;
-    curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct);
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    /* Log CT now — ct pointer is owned by curl and invalid after cleanup */
-    syslog(LOG_INFO, "vapix: snapshot HTTP %ld content-type=%s",
-           http_code, ct ? ct : "(none)");
-
-    /* Reject explicitly if the response is an error document.
-     * Do NOT reject on NULL or unknown content-type — some cameras omit
-     * the Content-Type header on image responses and CURLINFO_CONTENT_TYPE
-     * returns NULL even on a valid JPEG body.  Trust HTTP 200 for those. */
-    int is_error_body = ct &&
-        (strstr(ct, "text/html")       != NULL ||
-         strstr(ct, "application/json") != NULL ||
-         strstr(ct, "text/plain")       != NULL);
-
-    curl_easy_cleanup(curl);
-    fclose(f);
-
-    if (http_code_out) *http_code_out = http_code;
-
-    if (rc != CURLE_OK) {
-        syslog(LOG_WARNING, "vapix: snapshot curl error: %s", curl_easy_strerror(rc));
-        unlink(path);
-        return -1;
+    if (resolution && *resolution && !vapix_valid_resolution(resolution)) {
+        syslog(LOG_WARNING, "%s: snapshot: invalid resolution \"%s\" — using camera default",
+               tag, resolution);
+        resolution = NULL;
     }
-    if (http_code != 200) {
-        syslog(LOG_WARNING, "vapix: snapshot HTTP %ld (expected 200)", http_code);
-        unlink(path);
-        return -1;
-    }
-    if (is_error_body) {
-        syslog(LOG_WARNING,
-               "vapix: snapshot rejected error body (content-type: %s)", ct);
-        unlink(path);
-        return -1;
-    }
-    return 0;
-}
 
-int vapix_snapshot_to_file_remote(const char *host,
-                                  const char *path,
-                                  const char *resolution,
-                                  const char *user,
-                                  const char *pass,
-                                  long *http_code_out) {
-    if (!host || !*host) return -1;
     char url[512];
     if (resolution && *resolution)
         snprintf(url, sizeof(url),
@@ -234,56 +211,89 @@ int vapix_snapshot_to_file_remote(const char *host,
 
     FILE *f = fopen(path, "wb");
     if (!f) {
-        syslog(LOG_WARNING, "multicam: snapshot: fopen(%s): %s",
-               path, strerror(errno));
+        syslog(LOG_WARNING, "%s: snapshot: fopen(%s): %s", tag, path, strerror(errno));
         return -1;
     }
 
     CURL *curl = curl_easy_init();
     if (!curl) { fclose(f); unlink(path); return -1; }
 
-    set_auth(curl, user, pass);
+    int is_local = strcmp(host, "localhost") == 0 || strncmp(host, "127.", 4) == 0;
+    char userpwd[256];
+    set_auth(curl, userpwd, sizeof(userpwd), user, pass);
     curl_easy_setopt(curl, CURLOPT_URL,           url);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       15L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_file_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA,     f);
+    /* Remote cameras get a tighter budget: a transition can fan out to 8
+     * of them sequentially on the single daemon thread. */
+    set_common(curl, is_local ? 10L : 8L);
 
     CURLcode rc = curl_easy_perform(curl);
 
-    char *ct = NULL;
-    curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct);
+    /* Read response metadata before freeing the curl handle — the
+     * CONTENT_TYPE pointer is owned by the handle and dies with it. */
+    char ct[128] = "";
+    char *ct_ptr = NULL;
+    curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct_ptr);
+    if (ct_ptr) snprintf(ct, sizeof(ct), "%s", ct_ptr);
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    syslog(LOG_INFO, "multicam: %s HTTP %ld content-type=%s",
-           host, http_code, ct ? ct : "(none)");
+    curl_easy_cleanup(curl);
 
-    int is_error_body = ct &&
+    int close_err = (fclose(f) != 0);
+
+    syslog(LOG_INFO, "%s: snapshot %s HTTP %ld content-type=%s",
+           tag, host, http_code, ct[0] ? ct : "(none)");
+
+    /* Reject explicitly if the response is an error document.
+     * Do NOT reject on an unknown content-type — some cameras omit the
+     * Content-Type header on image responses.  Trust HTTP 200 for those. */
+    int is_error_body = ct[0] &&
         (strstr(ct, "text/html")        != NULL ||
          strstr(ct, "application/json") != NULL ||
          strstr(ct, "text/plain")       != NULL);
 
-    curl_easy_cleanup(curl);
-    fclose(f);
-
     if (http_code_out) *http_code_out = http_code;
 
     if (rc != CURLE_OK) {
-        syslog(LOG_WARNING, "multicam: %s curl error: %s",
-               host, curl_easy_strerror(rc));
+        syslog(LOG_WARNING, "%s: snapshot curl error: %s", tag, curl_easy_strerror(rc));
         unlink(path);
         return -1;
     }
     if (http_code != 200) {
-        syslog(LOG_WARNING, "multicam: %s HTTP %ld (expected 200)", host, http_code);
+        syslog(LOG_WARNING, "%s: snapshot HTTP %ld (expected 200)", tag, http_code);
         unlink(path);
         return -1;
     }
     if (is_error_body) {
-        syslog(LOG_WARNING, "multicam: %s rejected error body (%s)", host, ct);
+        syslog(LOG_WARNING, "%s: snapshot rejected error body (content-type: %s)", tag, ct);
+        unlink(path);
+        return -1;
+    }
+    if (close_err) {
+        /* Storage full / SD removed mid-write: the file is truncated. */
+        syslog(LOG_WARNING, "%s: snapshot fclose(%s): %s", tag, path, strerror(errno));
         unlink(path);
         return -1;
     }
     return 0;
+}
+
+int vapix_snapshot_to_file(const char *path,
+                           const char *resolution,
+                           const char *user,
+                           const char *pass,
+                           long *http_code_out) {
+    return snapshot_impl("vapix", "localhost", path, resolution, user, pass, http_code_out);
+}
+
+int vapix_snapshot_to_file_remote(const char *host,
+                                  const char *path,
+                                  const char *resolution,
+                                  const char *user,
+                                  const char *pass,
+                                  long *http_code_out) {
+    return snapshot_impl("multicam", host, path, resolution, user, pass, http_code_out);
 }
 
 #else /* CGI_NO_CURL — stub implementations: VAPIX not available without libcurl */

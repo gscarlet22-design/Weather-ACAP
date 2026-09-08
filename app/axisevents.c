@@ -17,6 +17,8 @@
  */
 
 #include "axisevents.h"
+#include "alerts.h"
+#include "threshold.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -146,7 +148,11 @@ void axisevents_publish_alert(const char *event_type,
     (void)headline;   /* reserved for future use */
     if (!g_enabled || !g_handler || !g_alert_id) return;
 
-    gboolean active = (action && strcmp(action, "activated") == 0)
+    /* The stateful `active` property must mean "any alert is active", not
+     * "this transition was an activation" — otherwise a Flood Warning
+     * clearing flips it false while a Tornado Warning is still up and an
+     * Action Rule keyed on it stops recording. */
+    gboolean active = (alerts_any_active() || threshold_any_active())
                       ? TRUE : FALSE;
 
     AXEventKeyValueSet *set = ax_event_key_value_set_new();

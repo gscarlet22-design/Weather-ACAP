@@ -1,9 +1,11 @@
 #include "openmeteo.h"
 #include "cJSON.h"
+#include "version.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 
 #ifndef CGI_NO_CURL
 #include <curl/curl.h>
@@ -47,6 +49,9 @@ static const char *wmo_description(int code) {
 
 void openmeteo_get_observation(double lat, double lon, OMObservation *result) {
     memset(result, 0, sizeof(*result));
+    result->wind_speed_mph = -1;
+    result->wind_dir_deg   = -1;
+    result->humidity_pct   = -1;
 #ifndef CGI_NO_CURL
     char url[640];
     snprintf(url, sizeof(url),
@@ -62,24 +67,37 @@ void openmeteo_get_observation(double lat, double lon, OMObservation *result) {
     if (!curl) return;
 
     Buf buf = { NULL, 0 };
-    curl_easy_setopt(curl, CURLOPT_URL,           url);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT,     "WeatherACAP/2.0");
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       20L);
+    curl_easy_setopt(curl, CURLOPT_URL,            url);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT,      "WeatherACAP/" WEATHER_ACAP_VERSION);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        20L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
 
     CURLcode rc = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_easy_cleanup(curl);
 
-    if (rc != CURLE_OK || !buf.data) { free(buf.data); return; }
+    if (rc != CURLE_OK || !buf.data) {
+        syslog(LOG_WARNING, "openmeteo: fetch failed: %s", curl_easy_strerror(rc));
+        free(buf.data);
+        return;
+    }
+    if (http_code >= 400) {
+        syslog(LOG_WARNING, "openmeteo: HTTP %ld body=%.120s", http_code, buf.data);
+        free(buf.data);
+        return;
+    }
 
     cJSON *root = cJSON_Parse(buf.data);
     free(buf.data);
     if (!root) return;
 
     cJSON *current = cJSON_GetObjectItem(root, "current");
-    if (!current) { cJSON_Delete(root); return; }
+    if (!current || cJSON_IsNull(current)) { cJSON_Delete(root); return; }
 
     cJSON *t   = cJSON_GetObjectItem(current, "temperature_2m");
     cJSON *rh  = cJSON_GetObjectItem(current, "relative_humidity_2m");
@@ -87,17 +105,19 @@ void openmeteo_get_observation(double lat, double lon, OMObservation *result) {
     cJSON *ws  = cJSON_GetObjectItem(current, "wind_speed_10m");
     cJSON *wd  = cJSON_GetObjectItem(current, "wind_direction_10m");
 
-    if (cJSON_IsNumber(t))  result->temp_f         = t->valuedouble;
-    if (cJSON_IsNumber(rh)) result->humidity_pct    = (int)rh->valuedouble;
+    /* Temperature is required for a valid observation; the rest are
+     * reported as -1 when absent so thresholds can skip them. */
+    if (!cJSON_IsNumber(t)) { cJSON_Delete(root); return; }
+    result->temp_f = t->valuedouble;
+    if (cJSON_IsNumber(rh)) result->humidity_pct    = (int)(rh->valuedouble + 0.5);
     if (cJSON_IsNumber(ws)) result->wind_speed_mph  = ws->valuedouble;
-    if (cJSON_IsNumber(wd)) result->wind_dir_deg    = (int)wd->valuedouble;
-    else                    result->wind_dir_deg     = -1;
+    if (cJSON_IsNumber(wd)) result->wind_dir_deg    = ((int)wd->valuedouble % 360 + 360) % 360;
 
     int code = cJSON_IsNumber(wc) ? (int)wc->valuedouble : -1;
     snprintf(result->description, sizeof(result->description), "%s", wmo_description(code));
 
-    /* Daily.sunrise[0] / Daily.sunset[0] arrive as ISO "2026-04-22T06:42".
-     * Strip date prefix and store just "HH:MM". */
+    /* Daily.sunrise[0] / Daily.sunset[0] arrive as ISO "2026-04-22T06:42"
+     * (sometimes with seconds).  Keep just "HH:MM". */
     cJSON *daily = cJSON_GetObjectItem(root, "daily");
     if (daily) {
         cJSON *sr_arr = cJSON_GetObjectItem(daily, "sunrise");
@@ -107,14 +127,14 @@ void openmeteo_get_observation(double lat, double lon, OMObservation *result) {
         cJSON *ss0 = (ss_arr && cJSON_GetArraySize(ss_arr) > 0)
                       ? cJSON_GetArrayItem(ss_arr, 0) : NULL;
         if (cJSON_IsString(sr0) && sr0->valuestring) {
-            const char *t = strchr(sr0->valuestring, 'T');
-            snprintf(result->sunrise, sizeof(result->sunrise), "%s",
-                     t ? t + 1 : sr0->valuestring);
+            const char *tp = strchr(sr0->valuestring, 'T');
+            snprintf(result->sunrise, sizeof(result->sunrise), "%.5s",
+                     tp ? tp + 1 : sr0->valuestring);
         }
         if (cJSON_IsString(ss0) && ss0->valuestring) {
-            const char *t = strchr(ss0->valuestring, 'T');
-            snprintf(result->sunset, sizeof(result->sunset), "%s",
-                     t ? t + 1 : ss0->valuestring);
+            const char *tp = strchr(ss0->valuestring, 'T');
+            snprintf(result->sunset, sizeof(result->sunset), "%.5s",
+                     tp ? tp + 1 : ss0->valuestring);
         }
     }
 
