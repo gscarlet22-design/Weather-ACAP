@@ -64,7 +64,7 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
       "|High Wind Warning:30:0"
       "|Hurricane Warning:31:0"
       "|Tropical Storm Warning:32:0"
-      "|Excessive Heat Warning:33:0"
+      "|Extreme Heat Warning:33:0"
       "|Red Flag Warning:34:0" },
 
     /* Overlay */

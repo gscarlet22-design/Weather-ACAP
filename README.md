@@ -2,7 +2,7 @@
 
 A native **ACAP** application for Axis cameras that turns any Axis device into a self-contained weather-alert radio — no server required.
 
-The app polls US weather data in real time, then drives **VAPIX virtual input ports**, an **on-video text overlay**, **JPEG snapshots** (including from additional networked cameras), **MQTT publishes**, **email notifications**, **threshold-based condition alerts**, and **native AXIS camera events** — so your camera can react to the weather just like it reacts to motion.
+The app polls US weather data in real time, then drives **VAPIX virtual input ports**, an **on-video text overlay**, **JPEG snapshots** (including from additional networked cameras), **MQTT publishes**, **email notifications**, **webhooks with Slack/Teams/Discord/Home Assistant templates**, **threshold-based condition alerts**, **SPC lightning-risk alerts**, **native AXIS camera events**, and **C1710/C1720/D4200 hardware outputs** (display, strobe, siren profiles, audio clips) — so your camera can react to the weather just like it reacts to motion.
 
 ---
 
@@ -17,11 +17,15 @@ The app polls US weather data in real time, then drives **VAPIX virtual input po
 | 5 | **JPEG snapshots** | Captures a JPEG from the camera via VAPIX whenever an alert activates or clears; auto-deletes oldest files when a count limit is set |
 | 6 | **MQTT publishing** | Publishes JSON weather and alert payloads to any MQTT broker on every transition (or every poll) |
 | 7 | **Email notifications** | Sends plain-text email via SMTP/SMTPS (STARTTLS auto-negotiated); supports multiple recipients; optional on-clear emails |
-| 8 | **Webhook** | POSTs a JSON payload to any HTTP endpoint on alert transitions |
-| 9 | **History & diagnostics** | Alert history log, VAPIX/weather/webhook self-tests, manual port control, fire drill |
+| 8 | **Webhook** | POSTs a JSON payload to any HTTP endpoint on alert transitions (or every poll); custom `{token}` templates with Slack / Discord / Teams / Home Assistant presets |
+| 9 | **History & diagnostics** | Alert history log, VAPIX/weather/webhook self-tests, manual port control, fire drill, overlay maintenance, condition-trend sparklines |
 | 10 | **Notification cool-down** | Per-type minimum interval between repeat email/MQTT/webhook/snapshot notifications (VAPIX ports always fire immediately) |
 | 11 | **Multi-camera snapshots** | Capture JPEG snapshots from up to 8 additional networked Axis cameras simultaneously on alert |
 | 12 | **Native AXIS events** | Publishes `Alert` (stateful) and `Conditions` (stateless) events into the camera's native AXIS event system via `axevent` — usable in Action Rules, ACS, and ONVIF subscriptions |
+| 13 | **Lightning / thunderstorm risk** | Checks the NOAA SPC Day-1 Convective Outlook and fires a virtual input port (default 35) when the camera's location is inside a risk polygon at or above a chosen category |
+| 14 | **Hardware alert output** | Axis C1710/C1720: scrolling display message and strobe (red Warning / amber Watch); Axis D4200: named siren profile; any device with a media-clip library: play an audio clip per tier |
+| 15 | **Structured JSON logging** | Optional JSON log lines alongside syslog for Loki / Splunk / Datadog |
+| 16 | **Mock mode** | Synthetic Tornado Warning + fixed conditions for bench-testing every integration without waiting for weather (sticky banner while active) |
 
 Your VMS or the camera's own Action Rules can react to port changes to trigger recordings, audio clips, relay outputs, or any other action — exactly like a weather radio built into the camera.
 
@@ -29,20 +33,22 @@ Your VMS or the camera's own Action Rules can react to port changes to trigger r
 
 ## Supported devices
 
-| Device | Events | Overlay | Notes |
-|---|---|---|---|
-| Axis cameras (ARTPEC-7/8, CV25, etc.) | ✅ | ✅ | Full feature set |
-| Axis cameras without video (thermal, radar) | ✅ | — | Overlay auto-disabled |
-| Axis speakers / intercoms | ✅ | — | Overlay auto-disabled |
+| Device | Events | Overlay | Hardware output | Notes |
+|---|---|---|---|---|
+| Axis cameras (ARTPEC-7/8/9, CV25, etc.) | ✅ | ✅ | audio clips if a media-clip library exists | Full feature set |
+| Axis cameras without video (thermal, radar) | ✅ | — | — | Overlay auto-disabled |
+| Axis C1710 / C1720 network speaker-strobe | ✅ | — | display, strobe, audio clips | Overlay auto-disabled |
+| Axis D4200 network horn | — | — | remote siren profile, driven from any of the above | Configured as a target, not a host |
+| Other Axis speakers / intercoms | ✅ | — | audio clips | Overlay auto-disabled |
 
 **Architectures:**
 
 | `.eap` variant | SoC families | Example devices |
 |---|---|---|
 | **aarch64** | CV25, ARTPEC-8, ARTPEC-9 | M3086-V, P3265-V, Q6135-LE |
-| **armv7hf** | ARTPEC-7 | M3075-V, P3245-V |
+| **armv7hf** | ARTPEC-7 (AXIS OS 11.10+) | M3075-V, P3245-V |
 
-**Minimum firmware:** AXIS OS with Native ACAP SDK support (embedded SDK 3.0+). Overlay requires AXIS OS 11+ (JSON-RPC dynamic overlay API).
+**Minimum firmware:** AXIS OS with Native ACAP SDK support (embedded SDK 3.0+). Overlay requires AXIS OS 11+ (JSON-RPC dynamic overlay API); the app tracks the `identity`/`identifier` key drift between OS minors automatically.
 
 ---
 
@@ -59,17 +65,20 @@ Download the latest `.eap` for your architecture from the [Releases page](https:
 
 ### 2. Open the configuration UI
 
-Navigate to the app's built-in web page through the camera's app list. The storm-themed interface has seven tabs:
+Navigate to the app's built-in web page through the camera's app list. The storm-themed interface has eight tabs:
 
 | Tab | Purpose |
 |---|---|
-| **Dashboard** | Live conditions, active alerts, virtual port status, recent history |
-| **Location** | ZIP code, lat/lon override, weather provider, poll interval |
-| **Alerts & Triggers** | Map NWS alert types AND numeric thresholds to virtual input ports; notification cool-down settings |
-| **Overlay** | Toggle overlay, set position, customize the template |
+| **Dashboard** | Live conditions, active alerts, SPC risk, virtual port status, recent history, condition trend sparklines, **Poll now** |
+| **Location** | ZIP code, lat/lon override, weather provider, poll interval, NWS User-Agent |
+| **Alerts & Triggers** | Map NWS alert types AND numeric thresholds to virtual input ports; notification cool-down; lightning / thunderstorm risk |
+| **Overlay** | Toggle overlay, set position, customize the template, live preview, overlay health |
 | **Snapshots** | Configure auto-capture on alert, gallery, on-demand capture, auto-delete limit, additional cameras |
-| **Diagnostics** | Self-tests, manual port control, fire drill, device info |
-| **Advanced** | System on/off, VAPIX credentials, webhook, MQTT, email, native AXIS events, mock mode, backup/restore |
+| **Hardware Output** | C1710/C1720 display and strobe, D4200 profiles, audio clips (device-populated dropdown) — each with a test button |
+| **Diagnostics** | Self-tests, manual port control, fire drill, overlay maintenance, device info, alert history |
+| **Advanced** | System on/off, VAPIX credentials, webhook + templates, MQTT, email, native AXIS events, mock mode, JSON logging, backup/restore |
+
+The header shows the running version. Saves take effect within a second (including the poll interval); the status pill turns **NWS unreachable** when the alert feed cannot be fetched — port state is held, not cleared, until it recovers.
 
 ### 3. Configure your location
 
@@ -96,10 +105,13 @@ On the **Alerts & Triggers** tab, map NWS alert types to virtual input ports. De
 | High Wind Warning | 30 |
 | Hurricane Warning | 31 |
 | Tropical Storm Warning | 32 |
-| Excessive Heat Warning | 33 |
+| Extreme Heat Warning | 33 |
 | Red Flag Warning | 34 |
+| *SPC Lightning Risk* (see below) | 35 |
 
-Use **Auto-assign ports** to renumber sequentially. The **Fire / Clear** buttons on each row let you test individual ports immediately.
+Use **Auto-assign ports** to renumber sequentially. The **Fire / Clear** buttons on each row let you test individual ports immediately. Alert names are matched exactly (case-insensitive) against the NWS `event` field — NWS renamed several products in 2025 (`Excessive Heat` → `Extreme Heat`, `Wind Chill` → `Extreme Cold` / `Cold Weather Advisory`); check the [current product list](https://www.weather.gov/documentation/services-web-api) if a rule never fires.
+
+Rules can be edited while alerts are active: a rule that is disabled or deleted mid-alert clears its port through the normal transition path. Every mapped port is forced OFF when the app starts and cleared when it stops or the master switch is turned off.
 
 ### 5. Set up threshold-to-port mappings
 
@@ -118,7 +130,11 @@ Example rules:
 - `WindMph > 40 → Port 12` — high-wind alert above 40 mph
 - `HumidityPct > 90 → Port 13` — high-humidity alert
 
-Ports activate when the condition is met and clear automatically when it returns to normal.
+Ports activate when the condition is met and clear automatically when it returns to normal. Rules hold their state on a poll where the provider did not report that quantity (or conditions were unavailable), and there is no hysteresis — a value hovering on the threshold toggles the port each poll, so pick values with margin.
+
+### 5a. Lightning / thunderstorm risk
+
+The **⚡ Lightning & Thunderstorm Risk** card polls the [NOAA SPC Day-1 Convective Outlook](https://www.spc.noaa.gov/products/outlook/) (free GeoJSON, no key) and activates a virtual input port when the camera's coordinates fall inside a risk polygon at or above the chosen category (TSTM · MRGL · SLGT · ENH · MDT · HIGH). SPC updates roughly hourly, so the check runs every N poll cycles (default 6). Transitions appear in history, native events, notifications and hardware output (Watch tier) like any other alert; the current category is shown on the Dashboard and available as the `{lightning}` overlay token.
 
 ### 6. Wire up Action Rules or VMS events
 
@@ -151,6 +167,8 @@ When snapshot capture is enabled, the app saves a JPEG image via VAPIX each time
 - **Max snapshots to keep:** automatically deletes the oldest `.jpg` files after each new capture (default 50; set to 0 for unlimited)
 
 **Gallery:** the Snapshots tab shows a thumbnail gallery of all saved images with timestamps. Use **📷 Capture now** for an immediate on-demand capture without waiting for an alert. Use **Test & diagnose** for step-by-step troubleshooting output (auth failure vs. directory error vs. connectivity).
+
+Auto-delete only touches files this app wrote (`YYYYMMDD_HHMMSS_*.jpg`), so a shared SD-card folder is safe.
 
 ---
 
@@ -191,10 +209,12 @@ When enabled, the app publishes a JSON payload to your MQTT broker on every aler
 When enabled, the app sends a plain-text email on alert activation (and optionally on clear). All threshold-triggered events send email identically to NWS alert events.
 
 **Configuration (Advanced tab):**
-- **SMTP URL:** `smtp://mailhost:587` (STARTTLS auto-negotiated) or `smtps://mailhost:465` (implicit TLS)
+- **SMTP URL:** `smtp://mailhost:587` (STARTTLS) or `smtps://mailhost:465` (implicit TLS)
 - **From address / To address(es):** multiple recipients supported — separate with commas
 - **SMTP username / password:** optional auth (required for Gmail, Outlook 365, etc.)
 - **Also send on alert clear:** optional
+
+**TLS behaviour:** with a username configured, STARTTLS is *required* so credentials never travel in the clear; without one it is attempted opportunistically (plain internal relays keep working). Server certificates are **not** verified, so self-signed internal relays work — do not point it at an untrusted network path.
 
 **Gmail setup:** use `smtps://smtp.gmail.com:465` with your Gmail address as the username and a [Google App Password](https://support.google.com/accounts/answer/185833) as the password (not your Google account password). Use **Send test email** to verify before a real alert.
 
@@ -202,23 +222,30 @@ When enabled, the app sends a plain-text email on alert activation (and optional
 
 ## Webhook
 
-When enabled, POSTs a JSON payload to any URL whenever an alert activates or clears. Use to bridge to Slack, Teams, Node-RED, Home Assistant, or any HTTP endpoint.
+When enabled, POSTs a payload to any URL whenever an alert activates or clears (untick **Only POST for alert transitions** to also post every poll with `event_type: "poll"`). Use to bridge to Slack, Teams, Discord, Node-RED, Home Assistant, or any HTTP endpoint.
+
+**Default payload** (template left blank):
 
 ```json
 {
   "timestamp": "2026-04-28T14:25:37Z",
   "event_type": "alert_activated",
-  "alert_event": "Tornado Warning",
+  "alert": "Tornado Warning",
+  "headline": "Tornado Warning issued April 28 at 2:20PM CDT until 3:00PM CDT by NWS",
   "conditions": {
     "temp_f": 91.0,
     "description": "Partly Cloudy",
-    "wind_speed_mph": 22.0,
+    "wind_mph": 22.0,
+    "wind_dir_deg": 225,
     "humidity_pct": 68,
     "provider": "nws"
   },
+  "location": { "lat": 39.0577, "lon": -94.6406 },
   "active_alert_count": 1
 }
 ```
+
+**Custom templates:** the **Payload template** box accepts any text with `{token}` placeholders — `{timestamp}` `{event_type}` `{alert_type}` `{headline}` `{description}` (strings) and `{temp_f}` `{wind_mph}` `{humidity_pct}` `{active_count}` (numbers). Preset buttons fill in ready-made Slack, Discord, Teams and Home Assistant bodies. When the template is JSON (starts with `{` or `[`), string tokens are JSON-escaped so a headline containing quotes cannot break the payload; otherwise it is sent as `text/plain`. Redirects are followed with the POST intact, and 4xx/5xx responses are logged as warnings.
 
 ---
 
@@ -231,14 +258,16 @@ A text overlay is rendered at the configured corner of the live video stream and
 Temp: {temp}F | {cond} | Wind: {wind}mph {dir} | Hum: {hum}%
 ```
 
-**Available variables:** `{temp}` `{temp_f}` `{cond}` `{wind}` `{dir}` `{hum}` `{humidity}` `{provider}` `{lat}` `{lon}` `{time}` `{alert_type}`
+**Available variables:** `{temp}` `{temp_f}` `{cond}` `{wind}` `{dir}` `{arrow}` `{hum}` `{humidity}` `{provider}` `{sunrise}` `{sunset}` `{lightning}` `{lat}` `{lon}` `{time}` (camera-local `HH:MM`) `{utc}` (`HH:MM UTC`) — and `{alert_type}` inside the alert prefix.
 
 **Alert prefix** (prepended when alerts are active):
 ```
 [ALERT: {alert_type}]
 ```
 
-Position options: top-left, top-right, bottom-left, bottom-right.
+Position options: top-left, top-right, bottom-left, bottom-right. Changing the position re-creates the overlay on the next poll.
+
+**How it stays healthy:** the app creates one runtime text overlay and updates it in place every poll. Its handle is persisted to `/tmp` — the same lifetime as the camera's runtime overlays — so app restarts, crashes and upgrades reuse the existing overlay instead of adding another (versions before 1.1.0 stacked one per restart until the camera's limit was hit). Disabling the overlay, or the master switch, removes it from the video. The Overlay tab shows the live handle, or why the overlay is being skipped (no video channel / VAPIX auth failure / limit reached); **Diagnostics → Remove all text overlays** clears orphans left by older versions.
 
 ---
 
@@ -255,7 +284,7 @@ By default, every alert transition (activate or clear) immediately fires all ena
 
 Set either value to **0** to disable cool-down for that category.
 
-> **Note:** VAPIX virtual output ports are **always** fired immediately regardless of cool-down — the suppression only applies to email, MQTT, webhook, and snapshot channels. This preserves the integrity of VMS/Action Rule integrations.
+> **Note:** VAPIX virtual input ports, native AXIS events and hardware outputs are **always** driven immediately regardless of cool-down — the suppression only applies to email, MQTT, webhook, and snapshot channels. A "cleared" notification is always sent when its "activated" was sent, so downstream consumers never get stuck in the active state.
 
 ---
 
@@ -267,12 +296,14 @@ When an alert activates (or clears), the app can capture JPEG snapshots from up 
 
 1. Enable **Capture from additional cameras**
 2. Set the shared **Resolution** for all remote captures (independent from the local camera resolution)
-3. Add camera entries: **Host** (IP or hostname), **Username**, **Password**, and an optional **Label** shown in the filename
+3. Add camera entries: **Host** (IP or hostname, optionally `host:PORT`), **Username**, **Password** (may not contain `:` or `|`), and an optional **Label** shown in the filename
 
 Snapshot filenames include the label for easy identification:
 ```
-alert_Tornado_Warning_20260428T142537Z_cam_192_168_1_101.jpg
+20260428_142537_Parking_Lot_Tornado_Warning.jpg
 ```
+
+Passwords are never echoed back to the browser or included in the config export; a saved password shows as "(unchanged)" and is kept unless you type a new one.
 
 All remote snapshots are saved to the same directory as local snapshots and count toward the **Max snapshots to keep** limit. The **Test** button on each row verifies connectivity and saves a test image before a real alert.
 
@@ -302,6 +333,21 @@ The **WeatherAlert** event is stateful — its `active` property is set to `true
 
 ---
 
+## Hardware alert output
+
+The **Hardware Output** tab drives physical signalling devices on every alert activation, classified into two tiers: **Warning** (event name contains "Warning", "Emergency" or "Extreme") and **Watch** (contains "Watch", "Advisory", "Statement" or "Outlook"). Threshold rules and SPC lightning risk always use the Watch tier.
+
+| Channel | Device | What happens |
+|---|---|---|
+| **Speaker display** | Axis C1710 / C1720 | Scrolls the alert headline across the front-panel display for N seconds; text colour and per-tier background colour are configurable |
+| **Strobe light** | Axis C1710 / C1720 | `siren_and_light.cgi` start — Warning: fast red pulse; Watch: slow pulse in the device's nearest colour to amber (the palette is probed from `getCapabilities`, usually `yellow`). Stopped explicitly when the alert clears |
+| **D4200 Network Horn** | Axis D4200 (remote) | Starts a named siren/strobe **profile** pre-configured on the D4200 — one profile name per tier |
+| **Audio clips** | Any device with a media-clip library | Plays a clip per tier via `mediaclip.cgi`; clips are chosen from a dropdown populated from the device |
+
+Every channel fails silently on devices that lack the API (404/405 is logged and ignored). Each card has a test button that fires that channel at the chosen tier. Hardware outputs are not subject to notification cool-down.
+
+---
+
 ## Diagnostics & troubleshooting
 
 **Self-tests (Diagnostics tab):**
@@ -314,6 +360,8 @@ The **WeatherAlert** event is stateful — its `active` property is set to `true
 | **Fire port / Clear port** | Manually toggle any virtual input port by number |
 | **Fire Drill** | Activates ALL enabled ports at once (for end-to-end Action Rule testing) |
 | **Clear all** | Deactivates every mapped port |
+| **Remove all text overlays** | Deletes every runtime text overlay on the camera — one-shot cleanup for cameras upgraded from versions that stacked overlays |
+| **Poll now** (Dashboard) | Fetches weather immediately instead of waiting for the next interval |
 
 Per-row **Fire / Clear** buttons also appear on every alert and threshold row in the Alerts & Triggers tab.
 
@@ -333,13 +381,21 @@ Enable **Mock mode** in the Advanced tab to skip real weather fetches and inject
 
 ## Configuration backup & fleet deployment
 
-Use **Download config JSON** / **Upload config JSON** on the Advanced tab to export settings from one camera and import them into another — for deploying identical configurations across a fleet. All settings are exported except secret fields (VAPIX password, SMTP password, MQTT password).
+Use **Download config JSON** / **Upload config JSON** on the Advanced tab to export settings from one camera and import them into another — for deploying identical configurations across a fleet. All settings are exported except secret fields (VAPIX, SMTP, MQTT, D4200 and multi-camera passwords), which stay as stored on the importing device. Numeric fields outside their allowed range are clamped on import and reported.
+
+Configuration is stored in `/usr/local/packages/weather_acap/localdata/params.json` (file mode 0600) and survives app restarts and camera reboots; it is removed on uninstall.
+
+---
+
+## Structured JSON logging
+
+Enable **Structured JSON Logging** on the Advanced tab to emit one JSON object per daemon log line (`ts`, `level`, `app`, `msg`) on stderr alongside normal syslog, for Loki / Splunk / Datadog ingestion. Module-level lines written directly with `syslog()` (curl transport details) are not duplicated in JSON form.
 
 ---
 
 ## Building from source
 
-This is a native C ACAP built with the [ACAP Native SDK 1.14](https://github.com/AxisCommunications/acap-native-sdk). No runtime dependencies on the camera beyond OS-bundled libcurl and GLib.
+This is a native C ACAP built with the [ACAP Native SDK 1.14](https://github.com/AxisCommunications/acap-native-sdk). Runtime dependencies on the camera are the OS-bundled libcurl, GLib and libfcgi (and axevent for native events). The version string lives in one place, `app/version.h`, and must match `app/manifest.json` and the top of `CHANGELOG.md`.
 
 ### Prerequisites
 
@@ -359,11 +415,11 @@ id=$(docker create weather-acap-build:armv7hf)
 docker cp "$id:/opt/app/." dist/ && docker rm "$id"
 ```
 
-The `.eap` files appear in `dist/`.
+The `.eap` files appear in `dist/`. The Dockerfile stamps the target architecture into the manifest and passes `-a weather_acap.cgi` to `acap-build` — without that flag the FastCGI backend is left out of the package and the web UI returns HTTP 500.
 
 ### CI/CD
 
-GitHub Actions builds both architectures on every push and pull request. Tagged pushes (`v*.*.*`) publish a GitHub Release with both `.eap` files attached.
+GitHub Actions compiles both architectures on every push and pull request (`Build Check`, which also fails on compiler warnings) and packages `.eap` artifacts for pushes to `main` (`Build & Package ACAP`). Tagged pushes (`v*.*.*`) publish a GitHub Release with both `.eap` files attached.
 
 See [`.github/workflows/build.yml`](.github/workflows/build.yml) for the full pipeline.
 
@@ -373,32 +429,35 @@ See [`.github/workflows/build.yml`](.github/workflows/build.yml) for the full pi
 
 ```
 app/
-  weather_acap.c     Main daemon — GLib event loop, poll timer, alert transitions
-  config_cgi.c       FastCGI web-UI backend (all CGI endpoints)
-  params.c           axparameter wrapper — all config fields + defaults
-  weather_api.c      Weather provider abstraction (NWS / Open-Meteo)
-  nws.c              NWS API client + alert parser
+  weather_acap.c     Main daemon — GLib event loop, poll timer, alert transitions, signals
+  config_cgi.c       FastCGI web-UI backend (all CGI endpoints, validation, secret masking)
+  params.c           File-backed parameter store (localdata/params.json) — fields + defaults
+  version.h          Single source of the version string
+  weather_api.c      Weather provider abstraction (NWS / Open-Meteo), station + sun-time caching
+  nws.c              NWS API client + alert parser (unit-aware, fetch_ok flag)
   openmeteo.c        Open-Meteo API client
-  alerts.c           NWS alert-to-port mapping + transition state machine
+  alerts.c           NWS alert-to-port mapping + identity-keyed transition state machine
   threshold.c/h      Numeric threshold-to-port mapping + transition state machine
-  overlay.c          Template renderer + VAPIX dynamic overlay (JSON-RPC)
-  vapix.c            VAPIX helpers: virtual port control, snapshot, device info
+  lightning.c/h      SPC Day-1 convective outlook fetch + point-in-polygon
+  overlay.c          Template renderer + VAPIX dynamic overlay (JSON-RPC, persisted handle)
+  vapix.c            VAPIX helpers: virtual ports, snapshot, device info, input validation
+  alertoutput.c/h    Hardware output: C1710/C1720 display + strobe, D4200 profiles, audio clips
   history.c          Alert history ring buffer (JSONL file)
-  webhook.c          Outbound webhook HTTP POST via libcurl
-  snapshot.c/h       JPEG capture via VAPIX + auto-delete (snapshot_prune)
+  condhistory.c/h    Condition history ring buffer for dashboard sparklines
+  webhook.c          Outbound webhook HTTP POST via libcurl (templates, escaping)
+  snapshot.c/h       JPEG capture via VAPIX + auto-delete of app-owned files
+  multicam.c/h       Multi-camera snapshot capture (up to 8 remote Axis cameras)
   mqtt.c/h           MQTT publish via libcurl experimental MQTT support
   email.c/h          SMTP email via libcurl (RFC 2822, STARTTLS / SMTPS)
-  multicam.c/h       Multi-camera snapshot capture (up to 8 remote Axis cameras)
   axisevents.c/h     Native AXIS event publishing via axevent (Alert + Conditions)
-  condhistory.c/h    Condition history ring buffer for dashboard sparklines
-  cJSON.c/h          Bundled JSON parser (MIT — Dave Gamble)
+  jsonlog.c/h        Optional structured JSON log output
+  cJSON.c/h          Bundled minimal JSON parser (parse-only; strict; UTF-8 escapes)
   html/
-    index.html       Single-page app shell (7 tabs)
+    index.html       Single-page app shell (8 tabs)
     style.css        Storm-theme dark UI
     app.js           Tab routing, config CRUD, live polling, diagnostics
   manifest.json      ACAP package manifest
   Makefile           Cross-compile targets (used inside acap-build container)
-  CMakeLists.txt     CMake build definition
 Dockerfile           Native SDK build container (acap-native-sdk:1.14)
 ```
 

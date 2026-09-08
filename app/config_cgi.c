@@ -113,7 +113,7 @@ static const FieldMap FIELDS[] = {
       "|High Wind Warning:30:0"
       "|Hurricane Warning:31:0"
       "|Tropical Storm Warning:32:0"
-      "|Excessive Heat Warning:33:0"
+      "|Extreme Heat Warning:33:0"
       "|Red Flag Warning:34:0" },
     { "OverlayEnabled",       "overlay_enabled",       "yes" },
     { "OverlayPosition",      "overlay_position",      "topLeft" },
