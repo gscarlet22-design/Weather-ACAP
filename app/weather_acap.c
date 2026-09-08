@@ -23,6 +23,7 @@
 #include "jsonlog.h"
 #include "alertoutput.h"
 #include "version.h"
+#include "vapix.h"
 
 #include <curl/curl.h>
 #include <glib.h>
@@ -504,6 +505,14 @@ static gboolean on_reload_signal(gpointer ud) {
     return G_SOURCE_CONTINUE;
 }
 
+/* SIGUSR2 from the CGI: "poll now" (Dashboard button, overlay purge). */
+static gboolean on_poll_now_signal(gpointer ud) {
+    (void)ud;
+    jlog(LOG_INFO, "weather_acap: poll requested by UI");
+    do_poll(NULL);
+    return G_SOURCE_CONTINUE;
+}
+
 /* ── Poll callback ───────────────────────────────────────────────────────── */
 
 static gboolean do_poll(gpointer user_data) {
@@ -980,7 +989,8 @@ int main(void) {
      * SIGTERM during it is deferred, not fatal. */
     g_unix_signal_add(SIGTERM, on_quit_signal,   GINT_TO_POINTER(SIGTERM));
     g_unix_signal_add(SIGINT,  on_quit_signal,   GINT_TO_POINTER(SIGINT));
-    g_unix_signal_add(SIGUSR1, on_reload_signal, NULL);
+    g_unix_signal_add(SIGUSR1, on_reload_signal,   NULL);
+    g_unix_signal_add(SIGUSR2, on_poll_now_signal, NULL);
 
     GError *err = NULL;
     if (!params_init(&err)) {

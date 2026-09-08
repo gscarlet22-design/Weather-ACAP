@@ -28,7 +28,7 @@
       </svg>
       <div class="brand-text">
         <h1>Weather Monitor</h1>
-        <span class="subtitle">Self-contained weather-alert radio for Axis</span>
+        <span class="subtitle">Self-contained weather-alert radio for Axis <span id="app-version" style="opacity:.6;font-size:.85em;margin-left:.5em"></span></span>
       </div>
     </div>
     <div class="status-summary">
@@ -59,7 +59,9 @@
     <section id="tab-dashboard" class="tab-pane active">
       <div class="grid">
         <div class="card card-conditions">
-          <div class="card-header"><h2>Current Conditions</h2></div>
+          <div class="card-header"><h2>Current Conditions</h2>
+            <button class="btn btn-ghost btn-small" id="dash-poll-now" type="button" title="Fetch weather now instead of waiting for the next poll">&#8635; Poll now</button>
+          </div>
           <div class="card-body">
             <div class="big-stat">
               <span class="stat-value" id="dash-temp">--</span>
@@ -179,7 +181,7 @@
           </div>
           <div class="form-row">
             <label for="f-ua">NWS User-Agent</label>
-            <input id="f-ua" type="text" placeholder="WeatherACAP/2.0 (you@example.com)">
+            <input id="f-ua" type="text" placeholder="WeatherACAP (you@example.com)">
             <small>NWS requires a contact-identifying User-Agent. Please include an email address.</small>
           </div>
         </div>
@@ -195,7 +197,6 @@
       <div class="card">
         <div class="card-header">
           <h2>Alert &rarr; Port Mapping</h2>
-          <span id="alerts-port-banner" class="pill pill-info"></span>
         </div>
         <div class="card-body">
           <p class="hint">
@@ -310,7 +311,7 @@
           <div class="form-grid-2" style="margin-top:1rem;">
             <div class="form-row">
               <label for="f-lightning-port">Virtual input port</label>
-              <input id="f-lightning-port" type="number" min="1" max="32" value="35" style="max-width:100px;">
+              <input id="f-lightning-port" type="number" min="1" max="64" value="35" style="max-width:100px;">
               <small>Port to activate when thunderstorm/tornado risk is detected.</small>
             </div>
             <div class="form-row">
@@ -350,6 +351,7 @@
         </div>
         <div class="card-body">
           <p class="hint" id="overlay-video-hint">If your device has a camera, the template below is pushed to the video as a text overlay via the VAPIX overlay API.</p>
+          <p class="hint" id="overlay-limit-warn" style="display:none;color:#ffb74d;"></p>
 
           <div class="form-grid-2">
             <div class="form-row">
@@ -370,7 +372,7 @@
           <div class="form-row">
             <label for="f-overlay-template">Conditions template</label>
             <input id="f-overlay-template" type="text">
-            <small>Available: <code>{temp}</code> <code>{cond}</code> <code>{wind}</code> <code>{dir}</code> <code>{hum}</code> <code>{provider}</code> <code>{lat}</code> <code>{lon}</code> <code>{time}</code></small>
+            <small>Available: <code>{temp}</code> <code>{temp_f}</code> <code>{cond}</code> <code>{wind}</code> <code>{dir}</code> <code>{arrow}</code> <code>{hum}</code> <code>{provider}</code> <code>{sunrise}</code> <code>{sunset}</code> <code>{lightning}</code> <code>{lat}</code> <code>{lon}</code> <code>{time}</code> (camera local) <code>{utc}</code></small>
           </div>
           <div class="form-row">
             <label for="f-overlay-alert-template">Alert prefix (prepended when alerts active)</label>
@@ -406,7 +408,7 @@
           </label>
         </div>
         <div class="card-body">
-          <p class="hint">Capture a JPEG image from the camera via VAPIX whenever an alert fires. Saved to SD card when present, otherwise to <code>/tmp</code>.</p>
+          <p class="hint">Capture a JPEG image from the camera via VAPIX whenever an alert fires. Saved to the SD card when one is writable, otherwise to the app's persistent <code>localdata/snapshots</code> directory.</p>
           <div class="form-grid-2">
             <div class="form-row">
               <label for="f-snapshot-resolution">Resolution</label>
@@ -420,7 +422,7 @@
             <div class="form-row">
               <label for="f-snapshot-save-dir">Save directory <small class="opt">(optional)</small></label>
               <input id="f-snapshot-save-dir" type="text" placeholder="auto-detect SD card">
-              <small>Leave blank to auto-select. SD card preferred; falls back to <code>/tmp/weather_acap_snaps</code>.</small>
+              <small>Leave blank to auto-select. SD card preferred; falls back to <code>/usr/local/packages/weather_acap/localdata/snapshots</code>. Only files this app created (<code>YYYYMMDD_HHMMSS_*.jpg</code>) are ever pruned.</small>
             </div>
           </div>
           <div class="form-row">
@@ -718,6 +720,17 @@
         </div>
 
         <div class="card">
+          <div class="card-header"><h2>Overlay maintenance</h2></div>
+          <div class="card-body">
+            <p class="hint">Earlier versions created a new text overlay on every app restart until the camera's per-channel limit was reached, after which the overlay silently stopped appearing. This removes every runtime text overlay so the daemon can start fresh. Only needed once.</p>
+            <div class="diag-row">
+              <button class="btn btn-warning" id="diag-overlay-purge" type="button">Remove all text overlays</button>
+              <div id="diag-result-overlay" class="diag-result">&mdash;</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
           <div class="card-header"><h2>Device info</h2></div>
           <div class="card-body">
             <pre id="diag-device-info" class="mono small scroll">Loading&hellip;</pre>
@@ -862,7 +875,7 @@
           </label>
         </div>
         <div class="card-body">
-          <small>Send an email when an alert activates (and optionally clears). Uses your SMTP relay; TLS/STARTTLS is attempted automatically.</small>
+          <small>Send an email when an alert activates (and optionally clears). Uses your SMTP relay. With a username set, STARTTLS is <strong>required</strong> so credentials never travel in the clear; without one it is attempted opportunistically. Server certificates are not verified (self-signed internal relays work).</small>
           <div class="form-grid-2">
             <div class="form-row">
               <label for="f-email-smtp">SMTP URL</label>

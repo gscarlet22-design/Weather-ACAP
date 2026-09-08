@@ -2,7 +2,7 @@
  * cJSON - Ultralightweight JSON parser (MIT License)
  *
  * Trimmed, parse-only implementation.  Differences from upstream cJSON:
- *   - no Create*/Print*/Add* API (see cJSON.h for what exists)
+ *   - no Create/Print/Add API (see cJSON.h for what exists)
  *   - malformed input returns NULL from cJSON_Parse rather than a partial
  *     tree — a truncated NWS body must not look like "fewer alerts"
  *   - \uXXXX escapes (incl. surrogate pairs) are decoded to UTF-8

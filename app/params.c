@@ -18,6 +18,7 @@
 
 #include "params.h"
 #include "cJSON.h"
+#include "version.h"
 
 #include <glib.h>
 #include <stdio.h>
@@ -45,7 +46,7 @@ static const struct { const char *name; const char *value; } DEFAULTS[] = {
 
     /* Weather provider */
     { "WeatherProvider", "auto" },
-    { "NWSUserAgent",    "WeatherACAP/2.0 (admin@example.com)" },
+    { "NWSUserAgent",    "WeatherACAP/" WEATHER_ACAP_VERSION " (admin@example.com)" },
     { "PollInterval",    "300" },
 
     /* Alert → port map: "Type:Port:Enabled|Type:Port:Enabled|..." */
