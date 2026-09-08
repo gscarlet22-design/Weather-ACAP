@@ -4,11 +4,55 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <syslog.h>
 
-/* Per-rule active state across polls.  Index matches AlertMap rules[]. */
-static int g_prev_active[ALERTS_MAX_TYPES] = { 0 };
-static int g_any_active = 0;
+/* ── Per-rule state ─────────────────────────────────────────────────────── */
+
+/* Keyed by (type, port), NOT by rule index.  The map is re-parsed from live
+ * config every poll; an index-keyed table pointed at the wrong rule as soon
+ * as the user inserted, deleted or reordered a row mid-alert — a port got
+ * "cleared" that was never set, and the real one stayed ON forever. */
+typedef struct {
+    char type[ALERTS_MAX_TYPE_LEN];
+    int  port;
+    int  active;    /* logical state — edge-detected, drives callbacks */
+    int  port_ok;   /* last VAPIX write for `active` returned HTTP 200 */
+    int  seen;      /* touched during the current alerts_process pass */
+} AlertState;
+
+static AlertState g_state[ALERTS_MAX_TYPES];
+static int        g_state_n = 0;
+
+static AlertState *find_state(const char *type, int port) {
+    for (int i = 0; i < g_state_n; i++)
+        if (g_state[i].port == port && strcasecmp(g_state[i].type, type) == 0)
+            return &g_state[i];
+    return NULL;
+}
+
+static AlertState *get_state(const char *type, int port) {
+    AlertState *st = find_state(type, port);
+    if (st) return st;
+    if (g_state_n >= ALERTS_MAX_TYPES) return NULL;
+    st = &g_state[g_state_n++];
+    memset(st, 0, sizeof(*st));
+    snprintf(st->type, sizeof(st->type), "%s", type);
+    st->port    = port;
+    st->port_ok = 1;
+    return st;
+}
+
+/* Write a port; returns 1 on HTTP 200. */
+static int set_port(int port, int on, const char *user, const char *pass) {
+    long code = vapix_port_set(port, on, user, pass);
+    if (code != 200) {
+        syslog(LOG_WARNING, "alerts: port %d %s HTTP %ld — will retry next poll",
+               port, on ? "activate" : "clear", code);
+        return 0;
+    }
+    return 1;
+}
 
 /* ── Parser ─────────────────────────────────────────────────────────────── */
 
@@ -75,15 +119,21 @@ void alerts_process(const WeatherSnapshot *snap,
                     const char *vapix_pass,
                     alerts_transition_cb cb,
                     void *cb_user) {
-    int any = 0;
+    for (int i = 0; i < g_state_n; i++) g_state[i].seen = 0;
 
     for (int i = 0; i < map->count; i++) {
-        const AlertRule *r = &map->rules[i];
+        const AlertRule *r  = &map->rules[i];
+        AlertState      *st = get_state(r->type, r->port);
+        if (!st) continue;
+        st->seen = 1;
+
         if (!r->enabled) {
-            /* If previously active on this slot, clear it so we don't leak state. */
-            if (g_prev_active[i]) {
-                vapix_port_set(r->port, 0, vapix_user, vapix_pass);
-                g_prev_active[i] = 0;
+            if (st->active) {
+                syslog(LOG_INFO, "alerts: %s disabled while active → clearing port %d",
+                       r->type, r->port);
+                st->port_ok = set_port(r->port, 0, vapix_user, vapix_pass);
+                st->active  = 0;
+                if (cb) cb(r->type, "", "cleared", r->port, cb_user);
             }
             continue;
         }
@@ -91,38 +141,69 @@ void alerts_process(const WeatherSnapshot *snap,
         const char *headline = "";
         int active = find_matching_alert(r, snap, &headline);
 
-        if (active && !g_prev_active[i]) {
+        if (active && !st->active) {
             syslog(LOG_WARNING, "alerts: ACTIVE %s → port %d", r->type, r->port);
-            long code = vapix_port_set(r->port, 1, vapix_user, vapix_pass);
-            if (code != 200)
-                syslog(LOG_WARNING, "alerts: port %d activate HTTP %ld", r->port, code);
+            st->port_ok = set_port(r->port, 1, vapix_user, vapix_pass);
+            st->active  = 1;
             if (cb) cb(r->type, headline, "activated", r->port, cb_user);
-        } else if (!active && g_prev_active[i]) {
+        } else if (!active && st->active) {
             syslog(LOG_INFO, "alerts: cleared %s → port %d", r->type, r->port);
-            long code = vapix_port_set(r->port, 0, vapix_user, vapix_pass);
-            if (code != 200)
-                syslog(LOG_WARNING, "alerts: port %d clear HTTP %ld", r->port, code);
+            st->port_ok = set_port(r->port, 0, vapix_user, vapix_pass);
+            st->active  = 0;
             if (cb) cb(r->type, headline, "cleared", r->port, cb_user);
+        } else if (!st->port_ok) {
+            /* No edge, but the last write failed — retry until the camera
+             * agrees with us.  Previously a transient 401/timeout on the
+             * activate left the daemon believing the port was ON while it
+             * was OFF, with no retry ever. */
+            st->port_ok = set_port(r->port, st->active, vapix_user, vapix_pass);
+            if (st->port_ok)
+                syslog(LOG_INFO, "alerts: port %d write recovered (%s)",
+                       r->port, st->active ? "on" : "off");
         }
-
-        g_prev_active[i] = active;
-        if (active) any = 1;
     }
 
-    g_any_active = any;
+    /* Rules removed from the map while active: clear their ports too. */
+    for (int i = 0; i < g_state_n; i++) {
+        AlertState *st = &g_state[i];
+        if (st->seen || !st->active) continue;
+        syslog(LOG_INFO, "alerts: rule %s removed while active → clearing port %d",
+               st->type, st->port);
+        st->port_ok = set_port(st->port, 0, vapix_user, vapix_pass);
+        st->active  = 0;
+        if (cb) cb(st->type, "", "cleared", st->port, cb_user);
+    }
 }
 
 void alerts_clear_all(const AlertMap *map,
                       const char *vapix_user,
                       const char *vapix_pass) {
-    for (int i = 0; i < map->count; i++) {
-        if (g_prev_active[i])
-            vapix_port_set(map->rules[i].port, 0, vapix_user, vapix_pass);
+    (void)map;
+    for (int i = 0; i < g_state_n; i++) {
+        if (g_state[i].active)
+            vapix_port_set(g_state[i].port, 0, vapix_user, vapix_pass);
     }
-    memset(g_prev_active, 0, sizeof(g_prev_active));
-    g_any_active = 0;
+    memset(g_state, 0, sizeof(g_state));
+    g_state_n = 0;
+}
+
+void alerts_reset_ports(const AlertMap *map,
+                        const char *vapix_user,
+                        const char *vapix_pass) {
+    int n = 0;
+    for (int i = 0; i < map->count; i++) {
+        if (vapix_port_set(map->rules[i].port, 0, vapix_user, vapix_pass) == 200)
+            n++;
+    }
+    syslog(LOG_INFO, "alerts: startup reset — %d/%d mapped ports forced OFF",
+           n, map->count);
 }
 
 int alerts_any_active(void) {
-    return g_any_active;
+    /* Live scan rather than the end-of-pass flag: axisevents reads this
+     * from inside the transition callback, mid-pass, and must see the
+     * rule that just flipped. */
+    for (int i = 0; i < g_state_n; i++)
+        if (g_state[i].active) return 1;
+    return 0;
 }

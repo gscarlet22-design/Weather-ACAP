@@ -88,4 +88,13 @@ void threshold_clear_all(const ThresholdMap *map,
                          const char         *vapix_user,
                          const char         *vapix_pass);
 
+/* Force every port in the map OFF regardless of remembered state (startup
+ * after a crash — see alerts_reset_ports). */
+void threshold_reset_ports(const ThresholdMap *map,
+                           const char         *vapix_user,
+                           const char         *vapix_pass);
+
+/* True if any threshold rule is currently firing a port. */
+int threshold_any_active(void);
+
 #endif /* THRESHOLD_H */
