@@ -126,7 +126,7 @@ void snapshot_prune(const char *dir, int max_count) {
 
         struct stat st;
         char full[512];
-        snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
+        snprintf(full, sizeof(full), "%.255s/%.255s", dir, de->d_name);
         if (stat(full, &st) != 0) continue;
         if (!S_ISREG(st.st_mode)) continue;
 

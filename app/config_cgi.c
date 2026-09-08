@@ -279,13 +279,13 @@ static int mc_parse_rec(const char *rec, McRec *out) {
             if (*q < '0' || *q > '9') { has_port = 0; break; }
     }
     if (has_port) {
-        snprintf(out->host,  sizeof(out->host),  "%s:%s", f[0], f[1]);
+        snprintf(out->host,  sizeof(out->host),  "%.180s:%.10s", f[0], f[1]);
         snprintf(out->user,  sizeof(out->user),  "%s", f[2] ? f[2] : "root");
         snprintf(out->pass,  sizeof(out->pass),  "%s", f[3] ? f[3] : "");
         snprintf(out->label, sizeof(out->label), "%s", f[4] ? f[4] : "");
     } else {
         if (f[4]) f[4][-1] = ':';   /* label contained ':' — rejoin */
-        snprintf(out->host,  sizeof(out->host),  "%s", f[0]);
+        snprintf(out->host,  sizeof(out->host),  "%.191s", f[0]);
         snprintf(out->user,  sizeof(out->user),  "%s", f[1] ? f[1] : "root");
         snprintf(out->pass,  sizeof(out->pass),  "%s", f[2] ? f[2] : "");
         snprintf(out->label, sizeof(out->label), "%s", f[3] ? f[3] : "");
@@ -1019,7 +1019,7 @@ static void endpoint_snapshot_list(void) {
             if (flen < 5 || strcmp(fname + flen - 4, ".jpg") != 0) continue;
 
             char path[512];
-            snprintf(path, sizeof(path), "%s/%s", dir, fname);
+            snprintf(path, sizeof(path), "%.255s/%.255s", dir, fname);
             struct stat st;
             if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
 
@@ -1566,7 +1566,7 @@ static void endpoint_clip_list(void) {
         /* clip[N].name=STRING  — %[^\r\n] captures spaces in the name */
         } else if (sscanf(line, "clip[%d].name=%127[^\r\n]", &n, name_buf) == 2
                 && n >= 1 && n <= AO_MAX_CLIPS) {
-            strncpy(clips[n - 1].name, name_buf, 127);
+            snprintf(clips[n - 1].name, sizeof(clips[n - 1].name), "%s", name_buf);
             clips[n - 1].name[127]  = '\0';
             clips[n - 1].have_name  = 1;
             if (n > max_n) max_n = n;
