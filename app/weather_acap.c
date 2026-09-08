@@ -67,9 +67,30 @@ typedef struct { char key[128]; time_t last_notif; } NotifRecord;
 static NotifRecord g_notif_history[NOTIF_HISTORY_MAX];
 static int         g_notif_n = 0;
 
-/* Sprint 12 — SPC lightning state */
-static int g_lightning_active  = 0;   /* 1 = port currently activated */
-static int g_lightning_tick    = 0;   /* poll-cycle counter */
+/* Sprint 12 — SPC lightning state.  Label/level persist between checks so
+ * the overlay {lightning} token and status JSON are populated on every
+ * tick, not only on the ticks that hit the SPC feed. */
+static int  g_lightning_active   = 0;   /* 1 = port currently activated */
+static int  g_lightning_tick     = 0;   /* poll-cycle counter */
+static char g_lightning_label[8] = "";  /* last risk label ("" = none) */
+static int  g_lightning_level    = 0;
+
+/* FastCGI backend child (web UI).  Reaped and respawned from the GLib
+ * loop — see reap_children(). */
+#define CGI_RESPAWN_MIN_SEC 5
+#define CGI_RESPAWN_MAX     10
+static pid_t  g_cgi_pid          = 0;
+static time_t g_cgi_last_spawn   = 0;
+static int    g_cgi_spawned_once = 0;
+static int    g_cgi_respawns     = 0;
+static volatile sig_atomic_t g_sigchld_flag = 0;
+
+/* Poll timer — re-armed when PollInterval changes at runtime. */
+static int g_poll_interval = 0;
+
+static gboolean do_poll(gpointer user_data);
+static void     spawn_fastcgi_child(void);
+static void     arm_poll_timer(int interval);
 
 /* Returns 1 if the cool-down has elapsed (or no record exists yet) and
  * updates the record.  Returns 0 if still in cool-down. */
@@ -249,7 +270,7 @@ static void write_status(const WeatherSnapshot *snap,
         "  \"alerts\": [",
         ts,
         snap->lat, snap->lon,
-        video_present ? "true" : "false",
+        video_present < 0 ? "null" : video_present ? "true" : "false",
         snap->conditions.temp_f,
         e_desc,
         snap->conditions.wind_speed_mph,
@@ -274,11 +295,16 @@ static void write_status(const WeatherSnapshot *snap,
         "  \"lightning_risk\": \"%s\",\n"
         "  \"lightning_risk_level\": %d,\n"
         "  \"overlay_text\": \"%s\",\n"
+        "  \"overlay_id\": %d,\n"
+        "  \"overlay_limit_reached\": %s,\n"
         "  \"last_error\": \"%s\"\n"
         "}\n",
         snap->lightning_risk[0] ? snap->lightning_risk : "",
         snap->lightning_risk_level,
-        e_ov, e_err);
+        e_ov,
+        overlay_current_id(),
+        overlay_limit_reached() ? "true" : "false",
+        e_err);
     fclose(f);
 }
 
@@ -378,42 +404,93 @@ static void apply_save_file(void) {
     free(raw);
     if (!root) return;
 
-    int attempted = 0, succeeded = 0;
+    int applied = 0;
     for (int i = 0; CONFIG_PARAMS[i]; i++) {
         cJSON *v = cJSON_GetObjectItem(root, CONFIG_PARAMS[i]);
         if (cJSON_IsString(v)) {
-            attempted++;
-            GError *e = NULL;
-            gboolean ok = params_set(CONFIG_PARAMS[i], v->valuestring, &e);
-            if (ok) {
-                succeeded++;
-            } else {
-                jlog(LOG_WARNING,
-                       "weather_acap: params_set(%s=\"%s\") FAILED: %s",
-                       CONFIG_PARAMS[i],
-                       v->valuestring ? v->valuestring : "",
-                       (e && e->message) ? e->message : "(no error message)");
-            }
-            if (e) g_error_free(e);
+            params_set_deferred(CONFIG_PARAMS[i],
+                                v->valuestring ? v->valuestring : "");
+            applied++;
         }
     }
     cJSON_Delete(root);
 
+    /* One write + fsync for the whole batch — previously every key did its
+     * own full-file rewrite and fsync (~70 flash syncs per Save click). */
+    GError *e = NULL;
+    if (!params_flush(&e)) {
+        jlog(LOG_WARNING, "weather_acap: persisting %d key(s) FAILED: %s",
+             applied, (e && e->message) ? e->message : "(no error message)");
+        if (e) g_error_free(e);
+    }
+
     /* Re-export so CGI sees updated values */
     write_config_file();
-    jlog(LOG_INFO,
-           "weather_acap: applied save file from CGI (%d/%d keys stored)",
-           succeeded, attempted);
+    jlog(LOG_INFO, "weather_acap: applied save file from CGI (%d keys)", applied);
+
+    /* PollInterval used to take effect only after an app restart. */
+    arm_poll_timer(params_get_int("PollInterval", 300));
 }
 
-/* Short-interval callback that processes the SIGUSR1 reload flag.
- * The poll tick also honors the flag (see do_poll), but only every
+/* (Re)arm the poll timer.  No-op if the interval is unchanged.  Safe to
+ * call from inside do_poll itself: GLib tolerates removing the source that
+ * is currently dispatching. */
+static void arm_poll_timer(int interval) {
+    if (interval < MIN_POLL_SEC) interval = MIN_POLL_SEC;
+    if (g_timer_id && interval == g_poll_interval) return;
+    if (g_timer_id) g_source_remove(g_timer_id);
+    g_timer_id = g_timeout_add_seconds((guint)interval, do_poll, NULL);
+    if (g_poll_interval && g_poll_interval != interval)
+        jlog(LOG_INFO, "weather_acap: poll interval changed %d → %d seconds",
+             g_poll_interval, interval);
+    g_poll_interval = interval;
+}
+
+/* Reap exited children and respawn the FastCGI backend if it died.
+ * Runs from the GLib loop, never from the signal handler (syslog is not
+ * async-signal-safe).  A floor between attempts and a hard cap keep a
+ * crash-looping CGI from pegging the CPU or flooding the log. */
+static void reap_children(void) {
+    int status = 0;
+    pid_t pid;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        jlog(LOG_WARNING, "weather_acap: child pid=%d exited status=%d",
+             (int)pid, status);
+        if (pid == g_cgi_pid) g_cgi_pid = 0;
+    }
+
+    if (g_cgi_pid == 0 && g_cgi_spawned_once) {
+        time_t now = time(NULL);
+        if (now - g_cgi_last_spawn < CGI_RESPAWN_MIN_SEC) return;
+        if (g_cgi_respawns >= CGI_RESPAWN_MAX) {
+            if (g_cgi_respawns == CGI_RESPAWN_MAX) {
+                jlog(LOG_ERR,
+                     "weather_acap: FastCGI backend died %d times — giving up; "
+                     "web UI will return 503 until the app is restarted",
+                     CGI_RESPAWN_MAX);
+                g_cgi_respawns++;   /* log once */
+            }
+            return;
+        }
+        g_cgi_respawns++;
+        jlog(LOG_WARNING, "weather_acap: FastCGI backend is down — respawning (%d/%d)",
+             g_cgi_respawns, CGI_RESPAWN_MAX);
+        spawn_fastcgi_child();
+    }
+}
+
+/* Short-interval callback: SIGCHLD reaping and the SIGUSR1 reload flag.
+ * The poll tick also honors the reload flag (see do_poll), but only every
  * PollInterval seconds — too slow for an interactive UI, which would
  * otherwise see stale values on its next GET /config.  This runs every
- * second and is cheap: it's a flag check followed by an early return
- * when nothing changed. */
+ * second and is cheap: two flag checks followed by an early return when
+ * nothing changed. */
 static gboolean check_reload_cb(gpointer user_data) {
     (void)user_data;
+    if (g_sigchld_flag) {
+        g_sigchld_flag = 0;
+        reap_children();
+    }
     if (g_reload_flag) {
         g_reload_flag = 0;
         apply_save_file();
@@ -436,8 +513,24 @@ static gboolean do_poll(gpointer user_data) {
     int enabled = enabled_s && strcasecmp(enabled_s, "yes") == 0;
     free(enabled_s);
 
+    char *vuser    = params_get("VapixUser");
+    char *vpass    = params_get("VapixPass");
+    char *alertmap = params_get("AlertMap");
+    char *th_map   = params_get("ThresholdMap");
+
     if (!enabled) {
         jlog(LOG_INFO, "weather_acap: SystemEnabled=no, skipping poll");
+        /* Disabled means *off*: drop any active ports and the overlay so
+         * the camera does not keep signalling an alert nobody is watching.
+         * All three are no-ops when nothing is active. */
+        AlertMap map;
+        alerts_map_parse(alertmap, &map);
+        alerts_clear_all(&map, vuser, vpass);
+        ThresholdMap tmap;
+        threshold_map_parse(th_map, &tmap);
+        threshold_clear_all(&tmap, vuser, vpass);
+        overlay_delete(vuser, vpass);
+        free(vuser); free(vpass); free(alertmap); free(th_map);
         return G_SOURCE_CONTINUE;
     }
 
@@ -446,9 +539,6 @@ static gboolean do_poll(gpointer user_data) {
     char *lon_ov   = params_get("LonOverride");
     char *provider = params_get("WeatherProvider");
     char *ua       = params_get("NWSUserAgent");
-    char *alertmap = params_get("AlertMap");
-    char *vuser    = params_get("VapixUser");
-    char *vpass    = params_get("VapixPass");
     char *mock     = params_get("MockMode");
 
     char *ov_enabled = params_get("OverlayEnabled");
@@ -484,8 +574,7 @@ static gboolean do_poll(gpointer user_data) {
     char *em_pass     = params_get("EmailPass");
     char *em_on_clear = params_get("EmailOnClear");
 
-    /* Sprint 5 — threshold alerts + snapshot auto-delete */
-    char *th_map       = params_get("ThresholdMap");
+    /* Sprint 5 — snapshot auto-delete (ThresholdMap is read above) */
     int   sn_max_count = params_get_int("SnapshotMaxCount", 50);
 
     /* Sprint 7 — notification cool-down */
@@ -567,7 +656,56 @@ static gboolean do_poll(gpointer user_data) {
     alerts_map_parse(alertmap, &map);
 
     char overlay_text[400] = "";
-    int  video_present = 0;
+    int  video_present = -1;   /* -1 unknown, 0 no, 1 yes */
+
+    /* Sprint 12 — SPC lightning / convective risk.  Runs every ln_poll_mult
+     * ticks; the last result is held in g_lightning_* so the overlay
+     * {lightning} token and status JSON stay populated between checks.
+     * Must run BEFORE the overlay is rendered below.
+     *
+     * lightning_check() returns 1 at-risk, 0 clear, -1 fetch/parse error.
+     * On -1 the previous state is kept: a failed SPC fetch is not evidence
+     * that the risk has passed. */
+    int ln_on = ln_enabled && strcasecmp(ln_enabled, "yes") == 0;
+    if (ln_poll_mult < 1) ln_poll_mult = 1;
+    if (ln_on && ok && snap.lat != 0.0) {
+        g_lightning_tick++;
+        if ((g_lightning_tick - 1) % ln_poll_mult == 0) {
+            LightningRisk risk = { "", 0 };
+            int res = lightning_check(snap.lat, snap.lon, &risk);
+            if (res >= 0) {
+                int at_risk = (res == 1 && risk.risk_level >= ln_min_risk);
+                snprintf(g_lightning_label, sizeof(g_lightning_label), "%s",
+                         at_risk ? risk.label : "");
+                g_lightning_level = at_risk ? risk.risk_level : 0;
+
+                if (at_risk && !g_lightning_active) {
+                    jlog(LOG_WARNING,
+                         "weather_acap: SPC lightning risk %s (level %d) — activating port %d",
+                         risk.label, risk.risk_level, ln_port);
+                    vapix_port_set(ln_port, 1, vuser, vpass);
+                    history_append("SPC Lightning Risk",
+                                   lightning_risk_label(risk.risk_level), "activated");
+                    g_lightning_active = 1;
+                } else if (!at_risk && g_lightning_active) {
+                    jlog(LOG_INFO,
+                         "weather_acap: SPC lightning risk cleared — deactivating port %d",
+                         ln_port);
+                    vapix_port_set(ln_port, 0, vuser, vpass);
+                    history_append("SPC Lightning Risk", "", "cleared");
+                    g_lightning_active = 0;
+                }
+            }
+        }
+    } else if (!ln_on && g_lightning_active) {
+        /* Lightning disabled while port was active — clear it */
+        vapix_port_set(ln_port, 0, vuser, vpass);
+        g_lightning_active   = 0;
+        g_lightning_label[0] = '\0';
+        g_lightning_level    = 0;
+    }
+    snprintf(snap.lightning_risk, sizeof(snap.lightning_risk), "%s", g_lightning_label);
+    snap.lightning_risk_level = g_lightning_level;
 
     if (ok) {
         TickCtx ctx = {
@@ -659,8 +797,10 @@ static gboolean do_poll(gpointer user_data) {
         overlay_render_text(&snap, &ocfg, overlay_text, sizeof(overlay_text));
         if (ocfg.enabled)
             overlay_update(&snap, &ocfg, vuser, vpass);
+        else
+            overlay_delete(vuser, vpass);   /* toggled off → take it down */
 
-        video_present = (overlay_text[0] != '\0');
+        video_present = overlay_video_present();
 
         jlog(LOG_INFO,
                "weather_acap: %.0fF %s | wind %.0fmph | alerts:%d",
@@ -684,46 +824,6 @@ static gboolean do_poll(gpointer user_data) {
 
     /* Sprint 9 — publish current conditions as a native AXIS event */
     if (ok) axisevents_publish_conditions(&snap);
-
-    /* Sprint 12 — SPC lightning / convective risk check */
-    if (ln_enabled && strcasecmp(ln_enabled, "yes") == 0 && snap.lat != 0.0) {
-        g_lightning_tick++;
-        if (g_lightning_tick % ln_poll_mult == 1 || g_lightning_tick == 1) {
-            LightningRisk risk = { "", 0 };
-            int res = lightning_check(snap.lat, snap.lon, &risk);
-            int at_risk = (res == 1 && risk.risk_level >= ln_min_risk);
-
-            /* Copy risk label into snapshot for overlay {lightning} token */
-            snprintf(snap.lightning_risk, sizeof(snap.lightning_risk),
-                     "%s", at_risk ? risk.label : "");
-            snap.lightning_risk_level = at_risk ? risk.risk_level : 0;
-
-            if (at_risk && !g_lightning_active) {
-                jlog(LOG_WARNING,
-                       "weather_acap: SPC lightning risk %s (level %d) — activating port %d",
-                       risk.label, risk.risk_level, ln_port);
-                vapix_port_set(ln_port, 1, vuser, vpass);
-                history_append("SPC Lightning Risk", lightning_risk_label(risk.risk_level),
-                               "activated");
-                g_lightning_active = 1;
-                /* Update status with lightning info */
-                write_status(&snap, overlay_text, video_present, last_error);
-            } else if (!at_risk && g_lightning_active) {
-                jlog(LOG_INFO,
-                       "weather_acap: SPC lightning risk cleared — deactivating port %d",
-                       ln_port);
-                vapix_port_set(ln_port, 0, vuser, vpass);
-                history_append("SPC Lightning Risk", "", "cleared");
-                g_lightning_active = 0;
-                write_status(&snap, overlay_text, video_present, last_error);
-            }
-        }
-    } else if (!(ln_enabled && strcasecmp(ln_enabled, "yes") == 0)
-               && g_lightning_active) {
-        /* Lightning disabled while port was active — clear it */
-        vapix_port_set(ln_port, 0, vuser, vpass);
-        g_lightning_active = 0;
-    }
 
     /* Heartbeat */
     FILE *hb = fopen(HEARTBEAT_FILE, "w");
@@ -768,8 +868,6 @@ static gboolean do_poll(gpointer user_data) {
  * did not pre-wire the socket for the appName process (in which case we will
  * need a different spawning strategy, e.g. runMode=never or merged binary).
  */
-static pid_t g_cgi_pid = 0;
-
 static void spawn_fastcgi_child(void) {
     const char *sock = getenv("FCGI_SOCKET_NAME");
     jlog(LOG_INFO, "weather_acap: FCGI_SOCKET_NAME=%s",
@@ -795,22 +893,18 @@ static void spawn_fastcgi_child(void) {
         jlog(LOG_ERR, "weather_acap: exec %s failed: %m", cgi_path);
         _exit(1);
     }
-    g_cgi_pid = pid;
+    g_cgi_pid          = pid;
+    g_cgi_last_spawn   = time(NULL);
+    g_cgi_spawned_once = 1;
     jlog(LOG_INFO, "weather_acap: spawned FastCGI child pid=%d on socket=%s",
            (int)pid, sock);
 }
 
 static void on_sigchld(int sig) {
     (void)sig;
-    /* Reap the CGI child if it exits — we only log, not respawn for now. */
-    int status = 0;
-    pid_t pid;
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        jlog(LOG_WARNING,
-               "weather_acap: CGI child pid=%d exited status=%d",
-               (int)pid, status);
-        if (pid == g_cgi_pid) g_cgi_pid = 0;
-    }
+    /* Only set a flag here — reaping and logging happen in reap_children()
+     * from the GLib loop.  syslog()/jlog() are not async-signal-safe. */
+    g_sigchld_flag = 1;
 }
 
 int main(void) {
@@ -852,12 +946,9 @@ int main(void) {
 
     do_poll(NULL);   /* immediate first poll */
 
-    int interval = params_get_int("PollInterval", 300);
-    if (interval < MIN_POLL_SEC) interval = MIN_POLL_SEC;
-    jlog(LOG_INFO, "weather_acap: poll interval %d seconds", interval);
-
-    g_loop     = g_main_loop_new(NULL, FALSE);
-    g_timer_id = g_timeout_add_seconds((guint)interval, do_poll, NULL);
+    g_loop = g_main_loop_new(NULL, FALSE);
+    arm_poll_timer(params_get_int("PollInterval", 300));
+    jlog(LOG_INFO, "weather_acap: poll interval %d seconds", g_poll_interval);
     /* Fast path for CGI-triggered config reloads (SIGUSR1).  Without this,
      * Save would not appear to persist until the next poll, up to 5 min. */
     g_timeout_add(1000, check_reload_cb, NULL);
@@ -872,11 +963,19 @@ int main(void) {
     char *vuser    = params_get("VapixUser");
     char *vpass    = params_get("VapixPass");
     char *alertmap = params_get("AlertMap");
+    char *th_map   = params_get("ThresholdMap");
     AlertMap map;
     alerts_map_parse(alertmap, &map);
     alerts_clear_all(&map, vuser, vpass);
+    ThresholdMap tmap;
+    threshold_map_parse(th_map, &tmap);
+    threshold_clear_all(&tmap, vuser, vpass);   /* was never called on shutdown */
+    if (g_lightning_active) {
+        int ln_port = params_get_int("LightningPort", 35);
+        vapix_port_set(ln_port, 0, vuser, vpass);
+    }
     overlay_delete(vuser, vpass);
-    free(vuser); free(vpass); free(alertmap);
+    free(vuser); free(vpass); free(alertmap); free(th_map);
 
     /* Sprint 9 — undeclare AXIS events and free handler */
     axisevents_cleanup();
