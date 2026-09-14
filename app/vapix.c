@@ -75,32 +75,107 @@ static void set_auth(CURL *curl, char *userpwd, size_t len,
     curl_easy_setopt(curl, CURLOPT_USERPWD,  userpwd);
 }
 
-long vapix_port_set(int port, int activate, const char *user, const char *pass) {
-    char url[256];
-    snprintf(url, sizeof(url),
-        "http://localhost/axis-cgi/io/virtualport.cgi"
-        "?schemaversion=1&action=%d&port=%d",
-        activate ? 11 : 10, port);
+/*
+ * Virtual input port control.  AXIS has shipped three shapes of this API
+ * and firmware answers 404 (or a JSON error) for the ones it lacks:
+ *   1. JSON   POST /axis-cgi/virtualinput/activate.cgi | deactivate.cgi
+ *             {"apiVersion":"1.0","method":"activate","params":{"port":N}}
+ *   2. Legacy GET  /axis-cgi/io/virtualinput.cgi?action=N:/   (N:\ = off)
+ *   3. GET /axis-cgi/io/virtualport.cgi?schemaversion=1&action=11|10&port=N
+ * The variants are tried in order and the first that returns 200 with no
+ * error body is remembered.  Earlier builds used only #3 via HEAD, which
+ * returns 200 without proving the CGI ran; the 1.1.0 startup reset showed
+ * 0/15 ports accepted on an M3086-V, so the real answer is logged now.
+ */
+static int s_port_api = 0;   /* 0 = not yet known, else 1..3 */
+
+static long port_try(int variant, int port, int activate,
+                     const char *user, const char *pass, int *api_error) {
+    char url[256], body[128];
+    *api_error = 0;
 
     CURL *curl = curl_easy_init();
     if (!curl) return 0;
     char userpwd[256];
     set_auth(curl, userpwd, sizeof(userpwd), user, pass);
+
+    struct curl_slist *hdrs = NULL;
+    switch (variant) {
+    case 1:
+        snprintf(url, sizeof(url), "http://localhost/axis-cgi/virtualinput/%s.cgi",
+                 activate ? "activate" : "deactivate");
+        snprintf(body, sizeof(body),
+                 "{\"apiVersion\":\"1.0\",\"method\":\"%s\",\"params\":{\"port\":%d}}",
+                 activate ? "activate" : "deactivate", port);
+        hdrs = curl_slist_append(NULL, "Content-Type: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER,     hdrs);
+        curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, body);
+        break;
+    case 2:
+        snprintf(url, sizeof(url), "http://localhost/axis-cgi/io/virtualinput.cgi?action=%d:%s",
+                 port, activate ? "/" : "%5C");
+        break;
+    default:
+        snprintf(url, sizeof(url),
+                 "http://localhost/axis-cgi/io/virtualport.cgi?schemaversion=1&action=%d&port=%d",
+                 activate ? 11 : 10, port);
+        break;
+    }
+
+    Buf buf = { NULL, 0 };
     curl_easy_setopt(curl, CURLOPT_URL,           url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discard_cb);   /* plain GET, not HEAD */
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &buf);
     set_common(curl, 5L);
 
     CURLcode rc = curl_easy_perform(curl);
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (hdrs) curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
 
     if (rc != CURLE_OK) {
-        syslog(LOG_WARNING, "vapix: port %d %s curl err: %s",
-               port, activate ? "set" : "clear", curl_easy_strerror(rc));
+        syslog(LOG_WARNING, "vapix: port %d %s (api %d) curl err: %s",
+               port, activate ? "set" : "clear", variant, curl_easy_strerror(rc));
+        free(buf.data);
         return 0;
     }
+    /* The JSON API reports failures as HTTP 200 + {"error":...}. */
+    if (http_code == 200 && buf.data && strstr(buf.data, "\"error\""))
+        *api_error = 1;
+    if (http_code != 200 || *api_error)
+        syslog(LOG_INFO, "vapix: port %d %s via api %d → HTTP %ld %.100s",
+               port, activate ? "set" : "clear", variant, http_code,
+               buf.data ? buf.data : "");
+    free(buf.data);
     return http_code;
+}
+
+long vapix_port_set(int port, int activate, const char *user, const char *pass) {
+    int order[3] = { 1, 2, 3 };
+    if (s_port_api) {                 /* known-good variant first */
+        order[0] = s_port_api;
+        int k = 1;
+        for (int v = 1; v <= 3; v++) if (v != s_port_api) order[k++] = v;
+    }
+
+    long last = 0;
+    for (int i = 0; i < 3; i++) {
+        int api_error = 0;
+        last = port_try(order[i], port, activate, user, pass, &api_error);
+        if (last == 200 && !api_error) {
+            if (s_port_api != order[i]) {
+                s_port_api = order[i];
+                syslog(LOG_NOTICE, "vapix: virtual input API variant %d works on this firmware",
+                       s_port_api);
+            }
+            return 200;
+        }
+        if (s_port_api == order[i]) s_port_api = 0;   /* stopped working — re-probe */
+    }
+    syslog(LOG_WARNING, "vapix: port %d %s failed on every virtual input API (last HTTP %ld)",
+           port, activate ? "set" : "clear", last);
+    return last;
 }
 
 char *vapix_get(const char *path, const char *user, const char *pass,

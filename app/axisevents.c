@@ -86,6 +86,44 @@ static void kv_add_str(AXEventKeyValueSet *set, const char *key,
     }
 }
 
+/* Topic path for a declaration.  axevent rejects a set without the
+ * tnsaxis topic keys ("External event is missing topic"), which is why
+ * neither event ever appeared in Action Rules before 1.1.0.  The path
+ * shows up in the event picker as
+ *   Application platform → Weather Monitor ACAP → <leaf> */
+static void add_topics(AXEventKeyValueSet *set, const char *leaf,
+                       const char *leaf_label) {
+    GError *err = NULL;
+    const struct { const char *key; const char *val; } topics[] = {
+        { "topic0", "CameraApplicationPlatform" },
+        { "topic1", "WeatherACAP" },
+        { "topic2", leaf },
+    };
+    for (size_t i = 0; i < 3; i++) {
+        if (!ax_event_key_value_set_add_key_value(set, topics[i].key, "tnsaxis",
+                topics[i].val, AX_VALUE_TYPE_STRING, &err)) {
+            syslog(LOG_WARNING, "axisevents: add %s: %s",
+                   topics[i].key, err ? err->message : "?");
+            if (err) { g_error_free(err); err = NULL; }
+        }
+    }
+    /* Friendly names in the picker (best effort). */
+    ax_event_key_value_set_mark_as_user_defined(set, "topic1", "tnsaxis",
+                                                "Weather Monitor ACAP", NULL);
+    ax_event_key_value_set_mark_as_user_defined(set, "topic2", "tnsaxis",
+                                                leaf_label, NULL);
+}
+
+/* Keys whose values change per event must be marked as data. */
+static void mark_data(AXEventKeyValueSet *set, const char *key) {
+    GError *err = NULL;
+    if (!ax_event_key_value_set_mark_as_data(set, key, NULL, &err)) {
+        syslog(LOG_WARNING, "axisevents: mark_as_data(%s): %s",
+               key, err ? err->message : "?");
+        if (err) g_error_free(err);
+    }
+}
+
 /* ── Init ────────────────────────────────────────────────────────────────── */
 
 void axisevents_init(void) {
@@ -100,9 +138,13 @@ void axisevents_init(void) {
     /* ── Alert event — stateful (property) ─────────────────────────────── */
     {
         AXEventKeyValueSet *set = ax_event_key_value_set_new();
+        add_topics(set, "Alert", "Weather alert");
         kv_add_bool(set, "active",     FALSE);
         kv_add_str (set, "alert_type", "");
         kv_add_str (set, "action",     "");
+        mark_data(set, "active");
+        mark_data(set, "alert_type");
+        mark_data(set, "action");
 
         if (!ax_event_handler_declare(g_handler, set, TRUE /* stateful */,
                                       &g_alert_id, NULL, NULL, &err)) {
@@ -120,10 +162,15 @@ void axisevents_init(void) {
     /* ── Conditions event — stateless (notification) ───────────────────── */
     {
         AXEventKeyValueSet *set = ax_event_key_value_set_new();
+        add_topics(set, "Conditions", "Weather conditions");
         kv_add_double(set, "temp_f",       0.0);
         kv_add_double(set, "wind_mph",     0.0);
         kv_add_int   (set, "humidity_pct", 0);
         kv_add_str   (set, "description",  "");
+        mark_data(set, "temp_f");
+        mark_data(set, "wind_mph");
+        mark_data(set, "humidity_pct");
+        mark_data(set, "description");
 
         if (!ax_event_handler_declare(g_handler, set, FALSE /* stateless */,
                                       &g_cond_id, NULL, NULL, &err)) {
