@@ -47,11 +47,6 @@ static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     return n;
 }
 
-static size_t discard_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
-    (void)ptr; (void)ud;
-    return sz * nmemb;
-}
-
 /* Binary-safe write-to-file callback for JPEG capture. */
 static size_t write_to_file_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     return fwrite(ptr, sz, nmemb, (FILE *)ud);
