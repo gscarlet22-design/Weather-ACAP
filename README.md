@@ -65,7 +65,7 @@ Download the latest `.eap` for your architecture from the [Releases page](https:
 
 ### 2. Open the configuration UI
 
-Navigate to the app's built-in web page through the camera's app list. The storm-themed interface has eight tabs:
+Navigate to the app's built-in web page through the camera's app list. The console-style interface (sidebar navigation, numbered set-up order) has eight sections; most settings are chosen by clicking — pills, cards, swatches, quick-add chips and a click-to-assemble overlay builder — with free-text kept for the things that genuinely are (ZIP, coordinates, hosts, URLs, credentials):
 
 | Tab | Purpose |
 |---|---|

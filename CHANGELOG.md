@@ -10,6 +10,34 @@ for **fresh installs only**: the `Excessive Heat Warning` rule is now
 `Extreme Heat Warning` (NWS renamed the product in 2025), and the
 User-Agent string reports the real version.
 
+### Added — web UI redesign
+- Console-style layout: sidebar navigation with a numbered set-up order,
+  top bar with the live status pill, temperature and **Poll now**; master
+  switch in the sidebar.
+- **Click-driven overlay builder**: presets, field chips, a reorder/remove
+  tray, separator and label-style pickers, and a 2×2 corner grid — all
+  composing the same `OverlayTemplate` string, so the live preview is still
+  rendered by the camera.
+- Quick-add chips for the 15 default NWS alert types and the four common
+  threshold rules; pills for provider, poll interval, resolutions, durations,
+  retention, cool-downs, risk category and audio clips; colour swatches;
+  steppers on port fields; armed-port chips on Diagnostics.
+- New `app/html/ui.js` layers these controls over the existing inputs;
+  `app.js` and every CGI action/config key are unchanged. Deleting `ui.js`
+  leaves a working plain-form page.
+- `tools/ui-preview/` runs the UI in a desktop browser against a stubbed
+  CGI (not packaged — `acap-build` ships only `app/html/`).
+
+### Fixed — native AXIS events / virtual ports (found on-device)
+- Event declarations lacked the `tnsaxis` topic path, so the Alert and
+  Conditions events were never registered ("External event is missing
+  topic") and never appeared in Action Rules.
+- Virtual-input writes now try the JSON `virtualinput/activate.cgi` API, the
+  legacy `io/virtualinput.cgi?action=N:/` form and the old
+  `io/virtualport.cgi` endpoint in turn, remember which one the firmware
+  accepts, and log the HTTP result on failure (the 1.1.0 startup reset
+  showed 0/15 ports accepted on an M3086-V).
+
 ### Fixed — overlay
 - **Overlays no longer stack across restarts.** The overlay handle is
   persisted to `/tmp` (same lifetime as the camera's runtime overlays), so a
