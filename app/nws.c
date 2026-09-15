@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <math.h>
 #include <syslog.h>
 
@@ -26,6 +27,10 @@ static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ud) {
     return n;
 }
 
+/* GET url → body (caller frees).  Returns NULL on transport error OR on
+ * HTTP >= 400: NWS error bodies are application/problem+json and parsing
+ * one as data yields "no features" == "no alerts", which is exactly the
+ * failure this must prevent. */
 static char *http_get(const char *url, const char *user_agent) {
     CURL *curl = curl_easy_init();
     if (!curl) {
@@ -34,12 +39,15 @@ static char *http_get(const char *url, const char *user_agent) {
     }
 
     Buf buf = { NULL, 0 };
-    curl_easy_setopt(curl, CURLOPT_URL,           url);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT,     user_agent);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,     &buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       20L);
+    curl_easy_setopt(curl, CURLOPT_URL,            url);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT,      user_agent);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        20L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS,      3L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
 
     struct curl_slist *hdrs = curl_slist_append(NULL, "Accept: application/geo+json,application/json");
@@ -60,29 +68,35 @@ static char *http_get(const char *url, const char *user_agent) {
     }
     if (http_code >= 400) {
         syslog(LOG_WARNING,
-               "nws/http_get non-2xx: url=%s http=%ld bytes=%zu",
-               url, http_code, buf.size);
-        /* Still return body — caller can decide what to do. */
-    } else {
-        syslog(LOG_INFO,
-               "nws/http_get ok: url=%s http=%ld bytes=%zu",
-               url, http_code, buf.size);
+               "nws/http_get HTTP %ld: url=%s body=%.120s",
+               http_code, url, buf.data ? buf.data : "");
+        free(buf.data);
+        return NULL;
     }
+    syslog(LOG_INFO, "nws/http_get ok: url=%s http=%ld bytes=%zu",
+           url, http_code, buf.size);
     return buf.data; /* caller must free */
 }
 
 #endif /* CGI_NO_CURL */
 
-/* ── Census Geocoder ─────────────────────────────────────────────────────── */
+/* ── ZIP geocoder ────────────────────────────────────────────────────────── */
 
 void nws_geocode_zip(const char *zip, const char *user_agent, NWSCoords *result) {
     result->valid = 0;
 #ifndef CGI_NO_CURL
     if (!zip || !*zip) return;
 
-    /* Use zippopotam.us — free, no auth, ZIP-only.  The Census Geocoder's
-     * /locations/address endpoint requires `street`, so the previous
-     * "?zip=NNNNN" form silently returned zero matches.                  */
+    /* Only digits are valid in a US ZIP; anything else would need URL
+     * encoding and is a configuration error anyway. */
+    for (const char *p = zip; *p; p++) {
+        if (*p < '0' || *p > '9') {
+            syslog(LOG_WARNING, "nws_geocode_zip(\"%s\"): not a numeric ZIP", zip);
+            return;
+        }
+    }
+
+    /* zippopotam.us — free, no auth, ZIP-only. */
     char url[256];
     snprintf(url, sizeof(url), "https://api.zippopotam.us/us/%s", zip);
 
@@ -99,7 +113,7 @@ void nws_geocode_zip(const char *zip, const char *user_agent, NWSCoords *result)
         return;
     }
 
-    /* zippopotam: {"places":[{"latitude":"39.0577","longitude":"-94.6406", ...}]} */
+    /* {"places":[{"latitude":"39.0577","longitude":"-94.6406", ...}]} */
     cJSON *places = cJSON_GetObjectItem(root, "places");
     cJSON *first  = (places && cJSON_GetArraySize(places) > 0)
                     ? cJSON_GetArrayItem(places, 0) : NULL;
@@ -120,10 +134,21 @@ void nws_geocode_zip(const char *zip, const char *user_agent, NWSCoords *result)
 #endif
 }
 
-/* ── NWS /points → nearest observation station ───────────────────────────── */
+/* ── NWS /points → nearest observation station (cached) ─────────────────── */
 
 #ifndef CGI_NO_CURL
+
+/* The station for a fixed camera never changes, so the two round trips
+ * (/points, then the stations list) are done once per coordinate pair.
+ * The cache is dropped if the observation call for that station fails so
+ * a decommissioned station is re-resolved on the next poll. */
+static double s_sta_lat = 0.0, s_sta_lon = 0.0;
+static char   s_sta_id[32] = "";
+
 static char *nws_get_station_id(double lat, double lon, const char *user_agent) {
+    if (s_sta_id[0] && s_sta_lat == lat && s_sta_lon == lon)
+        return strdup(s_sta_id);
+
     /* Step 1: /points to get observationStations URL */
     char url[256];
     snprintf(url, sizeof(url), "https://api.weather.gov/points/%.4f,%.4f", lat, lon);
@@ -158,12 +183,34 @@ static char *nws_get_station_id(double lat, double lon, const char *user_agent) 
         cJSON *feat  = cJSON_GetArrayItem(features, 0);
         cJSON *props2 = feat ? cJSON_GetObjectItem(feat, "properties") : NULL;
         cJSON *sid    = props2 ? cJSON_GetObjectItem(props2, "stationIdentifier") : NULL;
-        if (cJSON_IsString(sid))
+        if (cJSON_IsString(sid) && sid->valuestring && *sid->valuestring)
             station_id = strdup(sid->valuestring);
     }
     cJSON_Delete(root);
+
+    if (station_id) {
+        snprintf(s_sta_id, sizeof(s_sta_id), "%s", station_id);
+        s_sta_lat = lat;
+        s_sta_lon = lon;
+        syslog(LOG_INFO, "nws: using observation station %s for %.4f,%.4f",
+               s_sta_id, lat, lon);
+    }
     return station_id;
 }
+
+/* Read a {"value":N,"unitCode":"wmoUnit:..."} quantity.  Returns 1 and
+ * fills *out (converted with `factor(unit)`) when value is a number. */
+static int read_quantity(const cJSON *props, const char *key,
+                         double *out, const char **unit_out) {
+    cJSON *q = cJSON_GetObjectItem(props, key);
+    cJSON *v = q ? cJSON_GetObjectItem(q, "value") : NULL;
+    cJSON *u = q ? cJSON_GetObjectItem(q, "unitCode") : NULL;
+    if (unit_out) *unit_out = (cJSON_IsString(u) && u->valuestring) ? u->valuestring : "";
+    if (!cJSON_IsNumber(v)) return 0;
+    *out = v->valuedouble;
+    return 1;
+}
+
 #endif /* CGI_NO_CURL */
 
 /* ── NWS latest observation ──────────────────────────────────────────────── */
@@ -171,6 +218,9 @@ static char *nws_get_station_id(double lat, double lon, const char *user_agent) 
 void nws_get_observation(double lat, double lon, const char *user_agent,
                          NWSObservation *result) {
     memset(result, 0, sizeof(*result));
+    result->wind_speed_mph = -1;
+    result->wind_dir_deg   = -1;
+    result->humidity_pct   = -1;
 #ifndef CGI_NO_CURL
     char *station_id = nws_get_station_id(lat, lon, user_agent);
     if (!station_id) return;
@@ -181,47 +231,55 @@ void nws_get_observation(double lat, double lon, const char *user_agent,
     free(station_id);
 
     char *body = http_get(url, user_agent);
-    if (!body) return;
+    if (!body) {
+        /* Station may have been retired — force re-resolution next time. */
+        s_sta_id[0] = '\0';
+        return;
+    }
 
     cJSON *root  = cJSON_Parse(body);
     free(body);
     if (!root) return;
 
     cJSON *props = cJSON_GetObjectItem(root, "properties");
-    if (!props) { cJSON_Delete(root); return; }
+    if (!props || cJSON_IsNull(props)) { cJSON_Delete(root); return; }
 
-    /* Temperature (Celsius → Fahrenheit) */
-    cJSON *temp  = cJSON_GetObjectItem(props, "temperature");
-    cJSON *tval  = temp ? cJSON_GetObjectItem(temp, "value") : NULL;
-    if (cJSON_IsNumber(tval) && !cJSON_IsNull(tval))
-        result->temp_f = tval->valuedouble * 9.0 / 5.0 + 32.0;
+    double v; const char *unit;
+
+    /* Temperature — required.  A null here (QC-failed sensor, partial
+     * SPECI) used to yield 0 °F with valid=1, which tripped "TempF < 32"
+     * thresholds and logged a bogus dip.  Now the observation is invalid
+     * and the caller falls back to Open-Meteo. */
+    if (!read_quantity(props, "temperature", &v, &unit)) {
+        syslog(LOG_INFO, "nws: observation has no temperature; treating as invalid");
+        cJSON_Delete(root);
+        return;
+    }
+    result->temp_f = strstr(unit, "degF") ? v : v * 9.0 / 5.0 + 32.0;
 
     /* Text description */
     cJSON *desc = cJSON_GetObjectItem(props, "textDescription");
-    if (cJSON_IsString(desc))
+    if (cJSON_IsString(desc) && desc->valuestring && *desc->valuestring)
         snprintf(result->description, sizeof(result->description), "%s", desc->valuestring);
     else
         snprintf(result->description, sizeof(result->description), "Unknown");
 
-    /* Wind speed (m/s → mph) */
-    cJSON *wspd  = cJSON_GetObjectItem(props, "windSpeed");
-    cJSON *wval  = wspd ? cJSON_GetObjectItem(wspd, "value") : NULL;
-    if (cJSON_IsNumber(wval))
-        result->wind_speed_mph = wval->valuedouble * 2.23694;
+    /* Wind speed — honour unitCode.  The API reports km/h (it changed from
+     * m/s in 2019); the old fixed m/s→mph factor over-reported by 3.6×. */
+    if (read_quantity(props, "windSpeed", &v, &unit)) {
+        if      (strstr(unit, "km_h")) result->wind_speed_mph = v * 0.621371;
+        else if (strstr(unit, "m_s"))  result->wind_speed_mph = v * 2.23694;
+        else if (strstr(unit, "mi_h")) result->wind_speed_mph = v;
+        else                           result->wind_speed_mph = v * 0.621371;
+    }
 
     /* Wind direction (degrees) */
-    cJSON *wdir  = cJSON_GetObjectItem(props, "windDirection");
-    cJSON *wdval = wdir ? cJSON_GetObjectItem(wdir, "value") : NULL;
-    if (cJSON_IsNumber(wdval))
-        result->wind_dir_deg = (int)wdval->valuedouble;
-    else
-        result->wind_dir_deg = -1;
+    if (read_quantity(props, "windDirection", &v, NULL))
+        result->wind_dir_deg = ((int)v % 360 + 360) % 360;
 
     /* Relative humidity */
-    cJSON *rh   = cJSON_GetObjectItem(props, "relativeHumidity");
-    cJSON *rhv  = rh ? cJSON_GetObjectItem(rh, "value") : NULL;
-    if (cJSON_IsNumber(rhv))
-        result->humidity_pct = (int)rhv->valuedouble;
+    if (read_quantity(props, "relativeHumidity", &v, NULL))
+        result->humidity_pct = (int)(v + 0.5);
 
     result->valid = 1;
     cJSON_Delete(root);
@@ -241,7 +299,7 @@ void nws_get_alerts(double lat, double lon, const char *user_agent,
         "https://api.weather.gov/alerts/active?point=%.4f,%.4f", lat, lon);
 
     char *body = http_get(url, user_agent);
-    if (!body) return;
+    if (!body) return;                       /* fetch_ok stays 0 */
 
     cJSON *root = cJSON_Parse(body);
     free(body);
@@ -254,18 +312,32 @@ void nws_get_alerts(double lat, double lon, const char *user_agent,
     for (int i = 0; i < n && result->count < NWS_MAX_ALERTS; i++) {
         cJSON *feat  = cJSON_GetArrayItem(features, i);
         cJSON *props = feat ? cJSON_GetObjectItem(feat, "properties") : NULL;
-        if (!props) continue;
+        if (!props || cJSON_IsNull(props)) continue;
 
         cJSON *event    = cJSON_GetObjectItem(props, "event");
         cJSON *headline = cJSON_GetObjectItem(props, "headline");
+        cJSON *status   = cJSON_GetObjectItem(props, "status");
+        cJSON *mtype    = cJSON_GetObjectItem(props, "messageType");
 
-        if (!cJSON_IsString(event)) continue;
+        if (!cJSON_IsString(event) || !event->valuestring) continue;
+
+        /* Skip Test/Exercise/System products and cancellations. */
+        if (cJSON_IsString(status) && status->valuestring &&
+            strcasecmp(status->valuestring, "Actual") != 0) continue;
+        if (cJSON_IsString(mtype) && mtype->valuestring &&
+            (strcasecmp(mtype->valuestring, "Cancel") == 0 ||
+             strcasecmp(mtype->valuestring, "Expire") == 0)) continue;
 
         NWSAlert *a = &result->alerts[result->count++];
         snprintf(a->event,    sizeof(a->event),    "%s", event->valuestring);
         snprintf(a->headline, sizeof(a->headline), "%s",
-                 cJSON_IsString(headline) ? headline->valuestring : "");
+                 (cJSON_IsString(headline) && headline->valuestring)
+                 ? headline->valuestring : "");
     }
+    if (n > NWS_MAX_ALERTS)
+        syslog(LOG_WARNING, "nws: %d active products, keeping first %d",
+               n, NWS_MAX_ALERTS);
+    result->fetch_ok = 1;
     cJSON_Delete(root);
 #else
     (void)lat; (void)lon; (void)user_agent;

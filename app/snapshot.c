@@ -109,14 +109,24 @@ void snapshot_prune(const char *dir, int max_count) {
 
     struct dirent *de;
     while ((de = readdir(d)) != NULL && n < PRUNE_MAX_FILES) {
-        /* Only consider .jpg files */
-        size_t len = strlen(de->d_name);
-        if (len < 5) continue;
-        if (strcasecmp(de->d_name + len - 4, ".jpg") != 0) continue;
+        /* Only prune files THIS app wrote: YYYYMMDD_HHMMSS_*.jpg.  A
+         * user-configured SnapshotSaveDir may be a shared location (SD
+         * card root); deleting every .jpg there destroyed unrelated
+         * images. */
+        const char *nm = de->d_name;
+        size_t len = strlen(nm);
+        if (len < 20) continue;
+        if (strcasecmp(nm + len - 4, ".jpg") != 0) continue;
+        int ours = 1;
+        for (int k = 0; k < 8 && ours; k++)  if (!isdigit((unsigned char)nm[k]))  ours = 0;
+        if (nm[8] != '_') ours = 0;
+        for (int k = 9; k < 15 && ours; k++) if (!isdigit((unsigned char)nm[k]))  ours = 0;
+        if (nm[15] != '_') ours = 0;
+        if (!ours) continue;
 
         struct stat st;
         char full[512];
-        snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
+        snprintf(full, sizeof(full), "%.255s/%.255s", dir, de->d_name);
         if (stat(full, &st) != 0) continue;
         if (!S_ISREG(st.st_mode)) continue;
 

@@ -1,6 +1,7 @@
 name: Build Check
 
-# Fast feedback on every push/PR — verify the native code compiles.
+# Fast feedback on every push/PR — verify the native code compiles and both
+# binaries the package needs actually exist.
 on:
   push:
   pull_request:
@@ -27,6 +28,8 @@ jobs:
             sh -c '. /opt/axis/acapsdk/environment-setup-* \
                    && cd /opt/app \
                    && make clean \
-                   && make -j$(nproc) \
-                   && echo "Build OK: weather_acap + config_cgi" \
-                   && file weather_acap html/config_cgi'
+                   && make -j$(nproc) 2>&1 | tee build.log \
+                   && test -x weather_acap && test -x weather_acap.cgi \
+                   && echo "Build OK: weather_acap + weather_acap.cgi" \
+                   && file weather_acap weather_acap.cgi \
+                   && ! grep -E "warning:" build.log'

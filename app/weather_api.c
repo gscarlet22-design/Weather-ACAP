@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include <time.h>
 
 const char *weather_wind_dir_str(int deg) {
     if (deg < 0) return "---";
@@ -44,6 +45,15 @@ static int resolve_coords(const char *zip,
         return 0;
     }
 
+    /* A ZIP never moves; geocode it once per process. */
+    static char   s_zip[16] = "";
+    static double s_lat = 0.0, s_lon = 0.0;
+    if (s_zip[0] && strcmp(s_zip, zip) == 0) {
+        *lat_out = s_lat;
+        *lon_out = s_lon;
+        return 1;
+    }
+
     NWSCoords c;
     nws_geocode_zip(zip, user_agent, &c);
     if (!c.valid) {
@@ -54,6 +64,9 @@ static int resolve_coords(const char *zip,
     }
     *lat_out = c.lat;
     *lon_out = c.lon;
+    snprintf(s_zip, sizeof(s_zip), "%s", zip);
+    s_lat = c.lat;
+    s_lon = c.lon;
     syslog(LOG_INFO,
            "weather: nws_geocode_zip(\"%s\") → lat=%.6f lon=%.6f",
            zip, c.lat, c.lon);
@@ -69,7 +82,9 @@ int weather_api_fetch(const char *provider,
                       const char *user_agent,
                       WeatherSnapshot *snap) {
     memset(snap, 0, sizeof(*snap));
-    snap->conditions.wind_dir_deg = -1;
+    snap->conditions.wind_dir_deg   = -1;
+    snap->conditions.wind_speed_mph = -1;
+    snap->conditions.humidity_pct   = -1;
 
     double lat = 0.0, lon = 0.0;
     if (!resolve_coords(zip, lat_override, lon_override, user_agent, &lat, &lon))
@@ -122,22 +137,45 @@ int weather_api_fetch(const char *provider,
         }
     }
 
-    /* Even when NWS supplied conditions, fall back to Open-Meteo just for
-     * sun times (NWS doesn't expose them).  Cheap second call, free tier. */
+    /* Sun times: NWS doesn't expose them, so Open-Meteo is asked — but
+     * only once per calendar day, not every poll.  This cuts one HTTPS
+     * request from every cycle in "auto"/"nws" mode. */
     if (snap->conditions.valid && !snap->conditions.sunrise[0]) {
-        OMObservation om;
-        openmeteo_get_observation(lat, lon, &om);
-        if (om.valid) {
-            snprintf(snap->conditions.sunrise, sizeof(snap->conditions.sunrise),
-                     "%s", om.sunrise);
-            snprintf(snap->conditions.sunset, sizeof(snap->conditions.sunset),
-                     "%s", om.sunset);
+        static char   s_sunrise[8] = "", s_sunset[8] = "";
+        static int    s_yday = -1;
+        static double s_lat = 0.0, s_lon = 0.0;
+
+        time_t now = time(NULL);
+        struct tm tm;
+        localtime_r(&now, &tm);
+
+        if (!(s_yday == tm.tm_yday && s_lat == lat && s_lon == lon && s_sunrise[0])) {
+            OMObservation om;
+            openmeteo_get_observation(lat, lon, &om);
+            if (om.valid) {
+                snprintf(s_sunrise, sizeof(s_sunrise), "%s", om.sunrise);
+                snprintf(s_sunset,  sizeof(s_sunset),  "%s", om.sunset);
+                s_yday = tm.tm_yday; s_lat = lat; s_lon = lon;
+            }
         }
+        snprintf(snap->conditions.sunrise, sizeof(snap->conditions.sunrise), "%s", s_sunrise);
+        snprintf(snap->conditions.sunset,  sizeof(snap->conditions.sunset),  "%s", s_sunset);
     }
 
     /* ── Alerts (NWS only — no open-meteo alerts) ────────────────────────── */
-    if (use_nws)
+    if (use_nws) {
         nws_get_alerts(lat, lon, user_agent, &snap->alerts);
+        if (!snap->alerts.fetch_ok)
+            syslog(LOG_WARNING,
+                   "weather: alerts fetch FAILED — alert port state will be held, not cleared");
+    } else {
+        /* Open-Meteo-only mode has no alert source: "no alerts" is a known
+         * fact, so mapped ports may legitimately clear. */
+        snap->alerts.fetch_ok = 1;
+    }
 
-    return snap->conditions.valid || snap->alerts.count > 0;
+    /* Success means "something actionable": current conditions, or a
+     * trustworthy alert list (possibly empty).  Callers gate each consumer
+     * on the specific flag it needs. */
+    return snap->conditions.valid || snap->alerts.fetch_ok;
 }

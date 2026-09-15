@@ -8,6 +8,18 @@
  * All requests are made to http://localhost using Digest auth.
  */
 
+/* ── Input validation for strings interpolated into URLs ─────────────── */
+
+/* host[:port] — letters, digits, '.', '-', ':' and IPv6 brackets only.
+ * Rejects '/', '?', '#', '@' and whitespace so a configured host cannot
+ * redirect Digest credentials elsewhere. */
+int vapix_valid_host(const char *host);
+
+/* "WIDTHxHEIGHT", digits only. */
+int vapix_valid_resolution(const char *res);
+
+/* ── Calls ───────────────────────────────────────────────────────────── */
+
 /* Set a virtual input port state. Returns HTTP status, or 0 on error. */
 long vapix_port_set(int port, int activate, const char *user, const char *pass);
 

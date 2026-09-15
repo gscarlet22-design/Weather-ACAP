@@ -13,7 +13,42 @@
 
 /* ── Static activation state (persists across poll ticks) ──────────────── */
 
-static int g_prev_active[THRESHOLD_MAX_RULES] = { 0 };
+/* Keyed by (label, port) rather than rule index — see alerts.c for why.
+ * The label encodes condition/operator/value, so editing a rule's value
+ * yields a new identity and the old one is cleared as "removed". */
+typedef struct {
+    char label[64];
+    int  port;
+    int  active;
+    int  port_ok;
+    int  seen;
+} ThreshState;
+
+static ThreshState g_state[THRESHOLD_MAX_RULES];
+static int         g_state_n = 0;
+
+static ThreshState *get_state(const char *label, int port) {
+    for (int i = 0; i < g_state_n; i++)
+        if (g_state[i].port == port && strcmp(g_state[i].label, label) == 0)
+            return &g_state[i];
+    if (g_state_n >= THRESHOLD_MAX_RULES) return NULL;
+    ThreshState *st = &g_state[g_state_n++];
+    memset(st, 0, sizeof(*st));
+    snprintf(st->label, sizeof(st->label), "%s", label);
+    st->port    = port;
+    st->port_ok = 1;
+    return st;
+}
+
+static int set_port(int port, int on, const char *user, const char *pass) {
+    long code = vapix_port_set(port, on, user, pass);
+    if (code != 200) {
+        syslog(LOG_WARNING, "threshold: port %d %s HTTP %ld — will retry next poll",
+               port, on ? "activate" : "clear", code);
+        return 0;
+    }
+    return 1;
+}
 
 /* ── Parser helpers ─────────────────────────────────────────────────────── */
 
@@ -124,21 +159,30 @@ void threshold_map_parse(const char *mapstr, ThresholdMap *out) {
 
 /* ── Evaluation ────────────────────────────────────────────────────────── */
 
-/* Return the current value for a condition from the snapshot. */
-static double condition_value(ThresholdCondition cond,
-                               const WeatherSnapshot *snap) {
+/* Return the current value for a condition from the snapshot.
+ * Returns 0 (and leaves *out untouched) when the provider did not report
+ * that quantity — those rules are skipped rather than evaluated against a
+ * sentinel (-1 humidity used to satisfy "HumidityPct < 20"). */
+static int condition_value(ThresholdCondition cond,
+                           const WeatherSnapshot *snap, double *out) {
     switch (cond) {
-    case THRESH_COND_TEMP_F:       return snap->conditions.temp_f;
-    case THRESH_COND_WIND_MPH:     return snap->conditions.wind_speed_mph;
-    case THRESH_COND_HUMIDITY_PCT: return (double)snap->conditions.humidity_pct;
-    case THRESH_COND_WIND_DIR_DEG: return (double)snap->conditions.wind_dir_deg;
-    default:                        return 0.0;
+    case THRESH_COND_TEMP_F:
+        *out = snap->conditions.temp_f; return 1;
+    case THRESH_COND_WIND_MPH:
+        if (snap->conditions.wind_speed_mph < 0) return 0;
+        *out = snap->conditions.wind_speed_mph; return 1;
+    case THRESH_COND_HUMIDITY_PCT:
+        if (snap->conditions.humidity_pct < 0) return 0;
+        *out = (double)snap->conditions.humidity_pct; return 1;
+    case THRESH_COND_WIND_DIR_DEG:
+        if (snap->conditions.wind_dir_deg < 0) return 0;
+        *out = (double)snap->conditions.wind_dir_deg; return 1;
+    default:
+        return 0;
     }
 }
 
-static int evaluate_rule(const ThresholdRule *r,
-                          const WeatherSnapshot *snap) {
-    double cur = condition_value(r->condition, snap);
+static int evaluate_rule(const ThresholdRule *r, double cur) {
     switch (r->op) {
     case THRESH_OP_GT:  return cur >  r->value;
     case THRESH_OP_LT:  return cur <  r->value;
@@ -158,61 +202,97 @@ void threshold_process(const WeatherSnapshot    *snap,
                        void                     *cb_user) {
     if (!snap || !map) return;
 
+    /* No conditions this poll (alerts-only fetch) — hold state.  An
+     * all-zero snapshot used to fire "TempF < 32" on every NWS station
+     * hiccup. */
+    if (!snap->conditions.valid) return;
+
+    for (int i = 0; i < g_state_n; i++) g_state[i].seen = 0;
+
     for (int i = 0; i < map->count; i++) {
-        const ThresholdRule *r = &map->rules[i];
+        const ThresholdRule *r  = &map->rules[i];
+        ThreshState         *st = get_state(r->label, r->port);
+        if (!st) continue;
+        st->seen = 1;
 
         if (!r->enabled) {
-            if (g_prev_active[i]) {
-                vapix_port_set(r->port, 0, vapix_user, vapix_pass);
-                g_prev_active[i] = 0;
+            if (st->active) {
+                syslog(LOG_INFO, "threshold: %s disabled while active → clearing port %d",
+                       r->label, r->port);
+                st->port_ok = set_port(r->port, 0, vapix_user, vapix_pass);
+                st->active  = 0;
+                if (cb) cb(r->label, "", "cleared", r->port, cb_user);
             }
             continue;
         }
 
-        int active = evaluate_rule(r, snap);
+        double cur;
+        if (!condition_value(r->condition, snap, &cur))
+            continue;   /* quantity not reported this poll — hold state */
+        int active = evaluate_rule(r, cur);
 
-        if (active && !g_prev_active[i]) {
-            double cur = condition_value(r->condition, snap);
-            char headline[128];
-            snprintf(headline, sizeof(headline), "%s (current: %.4g)",
-                     r->label, cur);
+        char headline[128];
+        snprintf(headline, sizeof(headline), "%s (current: %.4g)", r->label, cur);
 
-            syslog(LOG_WARNING, "threshold: ACTIVE %s → port %d",
-                   r->label, r->port);
-            long code = vapix_port_set(r->port, 1, vapix_user, vapix_pass);
-            if (code != 200)
-                syslog(LOG_WARNING, "threshold: port %d activate HTTP %ld",
-                       r->port, code);
+        if (active && !st->active) {
+            syslog(LOG_WARNING, "threshold: ACTIVE %s → port %d", r->label, r->port);
+            st->port_ok = set_port(r->port, 1, vapix_user, vapix_pass);
+            st->active  = 1;
             if (cb) cb(r->label, headline, "activated", r->port, cb_user);
-
-        } else if (!active && g_prev_active[i]) {
-            double cur = condition_value(r->condition, snap);
-            char headline[128];
-            snprintf(headline, sizeof(headline), "%s (current: %.4g)",
-                     r->label, cur);
-
-            syslog(LOG_INFO, "threshold: cleared %s → port %d",
-                   r->label, r->port);
-            long code = vapix_port_set(r->port, 0, vapix_user, vapix_pass);
-            if (code != 200)
-                syslog(LOG_WARNING, "threshold: port %d clear HTTP %ld",
-                       r->port, code);
+        } else if (!active && st->active) {
+            syslog(LOG_INFO, "threshold: cleared %s → port %d", r->label, r->port);
+            st->port_ok = set_port(r->port, 0, vapix_user, vapix_pass);
+            st->active  = 0;
             if (cb) cb(r->label, headline, "cleared", r->port, cb_user);
+        } else if (!st->port_ok) {
+            st->port_ok = set_port(r->port, st->active, vapix_user, vapix_pass);
+            if (st->port_ok)
+                syslog(LOG_INFO, "threshold: port %d write recovered (%s)",
+                       r->port, st->active ? "on" : "off");
         }
+    }
 
-        g_prev_active[i] = active;
+    /* Rules removed (or re-valued) while active: clear the old identity. */
+    for (int i = 0; i < g_state_n; i++) {
+        ThreshState *st = &g_state[i];
+        if (st->seen || !st->active) continue;
+        syslog(LOG_INFO, "threshold: rule %s removed while active → clearing port %d",
+               st->label, st->port);
+        st->port_ok = set_port(st->port, 0, vapix_user, vapix_pass);
+        st->active  = 0;
+        if (cb) cb(st->label, "", "cleared", st->port, cb_user);
     }
 }
 
-/* ── Public: clear all ─────────────────────────────────────────────────── */
+/* ── Public: clear all / reset ─────────────────────────────────────────── */
 
 void threshold_clear_all(const ThresholdMap *map,
                           const char         *vapix_user,
                           const char         *vapix_pass) {
-    if (!map) return;
-    for (int i = 0; i < map->count; i++) {
-        if (g_prev_active[i])
-            vapix_port_set(map->rules[i].port, 0, vapix_user, vapix_pass);
+    (void)map;
+    for (int i = 0; i < g_state_n; i++) {
+        if (g_state[i].active)
+            vapix_port_set(g_state[i].port, 0, vapix_user, vapix_pass);
     }
-    memset(g_prev_active, 0, sizeof(g_prev_active));
+    memset(g_state, 0, sizeof(g_state));
+    g_state_n = 0;
+}
+
+void threshold_reset_ports(const ThresholdMap *map,
+                           const char         *vapix_user,
+                           const char         *vapix_pass) {
+    if (!map) return;
+    int n = 0;
+    for (int i = 0; i < map->count; i++)
+        if (vapix_port_set(map->rules[i].port, 0, vapix_user, vapix_pass) == 200)
+            n++;
+    if (map->count)
+        syslog(LOG_INFO, "threshold: startup reset — %d/%d mapped ports forced OFF",
+               n, map->count);
+}
+
+int threshold_any_active(void) {
+    for (int i = 0; i < g_state_n; i++)
+        if (g_state[i].active) return 1;
+    return 0;
 }

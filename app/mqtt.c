@@ -68,15 +68,44 @@ int mqtt_publish(const MqttConfig *cfg,
     (void)snap; (void)event_type; (void)alert_event;
     return 0;
 #else
+    CURL *curl = curl_easy_init();
+    if (!curl) return 0;
+
     /* Build the full MQTT URL: strip any trailing slash from broker_url,
-     * then append the topic as the URL path component. */
-    char url[512];
+     * then append the topic as the URL path.  Each topic segment is
+     * percent-encoded so '#', '?', '%', or a space in a topic name can't
+     * be swallowed by URL parsing (a trailing "/#" used to publish to the
+     * parent topic). */
+    char topic_enc[512] = "";
+    {
+        const char *t = cfg->topic;
+        while (*t) {
+            const char *slash = strchr(t, '/');
+            size_t seglen = slash ? (size_t)(slash - t) : strlen(t);
+            char seg[256];
+            snprintf(seg, sizeof(seg), "%.*s", (int)seglen, t);
+            char *e = curl_easy_escape(curl, seg, 0);
+            if (e) {
+                strncat(topic_enc, e, sizeof(topic_enc) - strlen(topic_enc) - 1);
+                curl_free(e);
+            }
+            if (!slash) break;
+            strncat(topic_enc, "/", sizeof(topic_enc) - strlen(topic_enc) - 1);
+            t = slash + 1;
+        }
+    }
+
+    char url[1024];
     size_t blen = strlen(cfg->broker_url);
     const char *base = cfg->broker_url;
-    if (blen > 0 && base[blen - 1] == '/')
-        snprintf(url, sizeof(url), "%.*s/%s", (int)(blen - 1), base, cfg->topic);
-    else
-        snprintf(url, sizeof(url), "%s/%s", base, cfg->topic);
+    int n = (blen > 0 && base[blen - 1] == '/')
+          ? snprintf(url, sizeof(url), "%.*s/%s", (int)(blen - 1), base, topic_enc)
+          : snprintf(url, sizeof(url), "%s/%s", base, topic_enc);
+    if (n < 0 || (size_t)n >= sizeof(url)) {
+        syslog(LOG_WARNING, "mqtt: broker URL + topic too long; not published");
+        curl_easy_cleanup(curl);
+        return 0;
+    }
 
     /* Build JSON payload */
     char body[2048];
@@ -112,9 +141,6 @@ int mqtt_publish(const MqttConfig *cfg,
         e_prov,
         snap ? snap->alerts.count              : 0);
 
-    CURL *curl = curl_easy_init();
-    if (!curl) return 0;
-
     /* Optional broker authentication */
     char userpwd[256] = "";
     if (cfg->username && *cfg->username) {
@@ -127,8 +153,10 @@ int mqtt_publish(const MqttConfig *cfg,
     curl_easy_setopt(curl, CURLOPT_URL,          url);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS,    body);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(body));
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,       8L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discard_cb);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        8L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 4L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  discard_cb);
 
     /* CURLOPT_MQTT_RETAIN was added in curl 7.82.0, but some SDK sysroots
      * define a version number >= 7.82.0 while still not exposing the constant

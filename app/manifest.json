@@ -4,9 +4,9 @@
     "setup": {
       "appName": "weather_acap",
       "friendlyName": "Weather Monitor ACAP",
-      "vendor": "gscarlet22-designs",
-      "vendorUrl": "https://github.com/gscarlet22-design",
-      "version": "1.0.1",
+      "vendor": "gscarlet22-design",
+      "vendorUrl": "https://github.com/gscarlet22-design/Weather-ACAP",
+      "version": "1.1.0",
       "architecture": "aarch64",
       "embeddedSdkVersion": "3.0",
       "runMode": "respawn"

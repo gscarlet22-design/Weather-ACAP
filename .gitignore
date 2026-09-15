@@ -2,8 +2,10 @@
 *.eap
 *.eap4
 *.o
+*.d
 dist/
 build/
+builds/
 .ci-artifact/
 
 # ── Claude scratch ────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@
 #include <string.h>
 #include <syslog.h>
 #include <time.h>
+#include <unistd.h>
 
 #define COND_FILE     "/tmp/weather_acap_cond.jsonl"
 #define MAX_FILE_BYTES (512 * 1024)   /* 512 KB safety cap */
@@ -33,16 +34,34 @@ static void cond_esc(const char *in, char *out, size_t outlen) {
 }
 
 /* ── Prune: rewrite file keeping only the last max_lines lines ─────────── */
+/*
+ * Runs only once the file has grown PRUNE_SLACK lines past the limit, so
+ * the full rewrite happens every ~30 polls rather than every poll at
+ * steady state.  The rewrite goes through a temp file + rename() so the
+ * CGI (which reads this file for the dashboard sparklines) never sees a
+ * half-written file.
+ */
+#define PRUNE_SLACK 32
+
 static void prune_file(const char *path, int max_lines) {
     FILE *f = fopen(path, "r");
     if (!f) return;
 
-    /* Read entire file into a heap buffer (capped at MAX_FILE_BYTES). */
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     rewind(f);
 
-    if (sz <= 0 || sz > MAX_FILE_BYTES) { fclose(f); return; }
+    if (sz <= 0) { fclose(f); return; }
+    if (sz > MAX_FILE_BYTES) {
+        /* Runaway file (only reachable after repeated failed prunes) —
+         * previously this early-returned forever, so the cap disabled the
+         * very mechanism meant to enforce it.  Start over. */
+        fclose(f);
+        syslog(LOG_WARNING, "condhistory: %s exceeded %d bytes; resetting",
+               path, MAX_FILE_BYTES);
+        unlink(path);
+        return;
+    }
 
     char *buf = (char *)malloc(sz + 1);
     if (!buf) { fclose(f); return; }
@@ -51,14 +70,12 @@ static void prune_file(const char *path, int max_lines) {
     fclose(f);
     buf[nr] = '\0';
 
-    /* Count newlines to determine line count. */
     int count = 0;
     for (size_t i = 0; i < nr; i++)
         if (buf[i] == '\n') count++;
 
-    if (count <= max_lines) { free(buf); return; }
+    if (count <= max_lines + PRUNE_SLACK) { free(buf); return; }
 
-    /* Skip the oldest (count - max_lines) lines. */
     int skip = count - max_lines;
     char *p = buf;
     for (int i = 0; i < skip && *p; i++) {
@@ -67,11 +84,17 @@ static void prune_file(const char *path, int max_lines) {
         p = nl + 1;
     }
 
-    /* Rewrite from p onwards. */
-    FILE *out = fopen(path, "w");
-    if (out) {
-        fputs(p, out);
-        fclose(out);
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *out = fopen(tmp, "w");
+    if (!out) { free(buf); return; }
+    int ok = (fputs(p, out) >= 0);
+    ok = (fclose(out) == 0) && ok;
+    if (ok && rename(tmp, path) == 0) {
+        /* pruned */
+    } else {
+        syslog(LOG_WARNING, "condhistory: prune rewrite failed; keeping old file");
+        unlink(tmp);
     }
     free(buf);
 }

@@ -1,7 +1,7 @@
 /*
  * alertoutput.h — Sprint 14: hardware alert output
  *
- * Drives up to four hardware channels when an NWS alert activates or clears:
+ * Drives up to four hardware channels when an alert activates or clears:
  *
  *   1. Speaker display notification (Axis C1710 / C1720)
  *      POST https://127.0.0.1/config/rest/speaker-display-notification/v1/simple
@@ -9,8 +9,10 @@
  *
  *   2. Strobe / siren-and-light (C1710 / C1720 — local)
  *      POST http://127.0.0.1/axis-cgi/siren_and_light.cgi  (method: start)
- *      Warning tier → red Pulse fast; Watch tier → amber Pulse slow.
- *      Self-terminates via configured duration; no explicit stop needed.
+ *      Warning tier → red Pulse fast; Watch tier → nearest-to-amber Pulse
+ *      slow.  Colour names are probed once from getCapabilities.  The
+ *      strobe self-terminates via duration and is also stopped explicitly
+ *      on clear.
  *
  *   3. D4200 Network Horn / remote siren — named profile activation
  *      POST http://<host>/axis-cgi/siren_and_light.cgi  (method: startProfile)
@@ -18,20 +20,32 @@
  *
  *   4. Audio clip via VAPIX mediaclip.cgi
  *      GET http://127.0.0.1/axis-cgi/mediaclip.cgi?action=play&clip=<id>
- *      Clip IDs must be pre-loaded on the device (via the device web UI or
- *      mediaclip.cgi upload).  Separate IDs for Warning and Watch tier.
+ *      Clip IDs must be pre-loaded on the device.  Separate IDs for Warning
+ *      and Watch tier.
  *
  * All channels fail-silently: on devices that don't support the API (any
  * non-C1710/C1720 camera) the HTTP calls simply return 404/405 and are logged
- * at LOG_INFO level with no impact on the rest of the alert pipeline.
+ * with no impact on the rest of the alert pipeline.
  *
- * Concurrency: all calls are synchronous (blocking up to CURLOPT_TIMEOUT=5s
- * each).  They are made from on_alert_transition() which fires only on genuine
- * state transitions, not every poll tick — so the brief latency is acceptable.
+ * Concurrency: all calls are synchronous (5 s timeout each, 3 s connect).
+ * Worst case for one activation with every channel enabled and every
+ * endpoint dead is ~25 s (probe 5 + display 5 + strobe 5 + D4200 5 +
+ * audio 5); the probe result is cached so later activations skip it.
  */
 
 #ifndef ALERTOUTPUT_H
 #define ALERTOUTPUT_H
+
+/*
+ * Severity tier.  Derived from the NWS event-type string unless the
+ * caller forces one (threshold rules and SPC lightning are WATCH tier —
+ * a humidity crossing must not fire the red strobe / emergency profile).
+ */
+typedef enum {
+    ALERT_TIER_NONE    = 0,   /* in forced_tier: classify by event name */
+    ALERT_TIER_WATCH   = 1,
+    ALERT_TIER_WARNING = 2,
+} AlertTier;
 
 typedef struct {
     /* ── Speaker display (C1710 / C1720) ──────────────────────────────────── */
@@ -58,33 +72,29 @@ typedef struct {
     int  audio_clip_warning;       /* clip ID integer; -1 = disabled for this tier */
     int  audio_clip_watch;         /* clip ID integer; -1 = disabled for this tier */
 
+    /* ── Tier override ──────────────────────────────────────────────────── */
+    AlertTier forced_tier;         /* ALERT_TIER_NONE → classify by event name */
+
     /* ── VAPIX credentials (for all local API calls) ──────────────────── */
     const char *vapix_user;        /* borrowed pointer — caller owns lifetime */
     const char *vapix_pass;
 } AlertOutputConfig;
 
 /*
- * Severity tier derived from the NWS event-type string.
- * Anything containing "Warning" or "Emergency" is WARNING.
- * "Watch", "Advisory", "Statement", "Outlook" → WATCH.
- * Unrecognised strings default to WARNING (conservative).
- */
-typedef enum {
-    ALERT_TIER_NONE    = 0,
-    ALERT_TIER_WATCH   = 1,
-    ALERT_TIER_WARNING = 2,
-} AlertTier;
-
-/*
  * alertoutput_classify()
- * Map an NWS event-type string to a severity tier.
+ * Map an NWS event-type string to a severity tier:
+ *   contains "warning"                      → WARNING
+ *   contains "watch"                        → WATCH   (incl. "Extreme Cold Watch")
+ *   contains "emergency" or "extreme"       → WARNING
+ *   contains "advisory"/"statement"/"outlook" → WATCH
+ *   anything else                           → WARNING (conservative)
  * Returns ALERT_TIER_NONE only for NULL / empty strings.
  */
 AlertTier alertoutput_classify(const char *nws_event);
 
 /*
  * alertoutput_on_activate()
- * Fire all enabled hardware channels for the given NWS event.
+ * Fire all enabled hardware channels for the given event.
  * headline is used as the display message text (may be NULL → falls back to
  * nws_event).  Not gated by notification cool-down — mirrors the same policy
  * as VAPIX virtual port activation.
@@ -94,9 +104,8 @@ void alertoutput_on_activate(const char *nws_event, const char *headline,
 
 /*
  * alertoutput_on_clear()
- * Called when an alert clears.  Currently a no-op: the strobe self-terminates
- * via its configured duration and the display expires automatically.  Reserved
- * for future firmware that exposes an explicit siren_and_light stop method.
+ * Stops the local strobe started by the most recent activation (if the
+ * firmware returned an id for it).  The display expires on its own.
  */
 void alertoutput_on_clear(const char *nws_event, const AlertOutputConfig *cfg);
 
